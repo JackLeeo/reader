@@ -12,6 +12,7 @@ class SettingsService extends ChangeNotifier {
   static const _keepScreenOnKey = 'reader_keep_screen_on';
   static const _invalidAutoDisableKey = 'invalid_auto_disable';
   static const _sourceCheckOnStartupKey = 'source_check_on_startup';
+  static const _firstRunDoneKey = 'first_run_done';
 
   ThemeMode _themeMode = ThemeMode.system;
   double _fontSize = 18.0;
@@ -20,8 +21,12 @@ class SettingsService extends ChangeNotifier {
   String _textColor = '#3E2723';
   String _pageTurn = 'slide'; // slide / curl / none
   bool _keepScreenOn = true;
-  bool _invalidAutoDisable = true; // 无效书源自动禁用 (默认开启)
-  bool _sourceCheckOnStartup = true; // 启动时自动检测书源 (默认开启)
+  // 默认关闭: 自动禁用可能误杀正常源, 让用户主动开
+  bool _invalidAutoDisable = false;
+  // 默认关闭: 启动时自动检测书源 (用户主动开才跑, 避免误禁)
+  bool _sourceCheckOnStartup = false;
+  // 首次运行未完成 (用于 SourceHealthService 跳过检测)
+  bool _firstRunDone = false;
 
   ThemeMode get themeMode => _themeMode;
   double get fontSize => _fontSize;
@@ -32,6 +37,11 @@ class SettingsService extends ChangeNotifier {
   bool get keepScreenOn => _keepScreenOn;
   bool get invalidAutoDisable => _invalidAutoDisable;
   bool get sourceCheckOnStartup => _sourceCheckOnStartup;
+  bool get firstRunDone => _firstRunDone;
+
+  /// 启动自动检测开关: 真正决定 SourceHealthService.runOnStartupIfNeeded 是否跑
+  /// 替代原 _sourceCheckOnStartup 的语义, 名字更清晰
+  bool get autoHealthCheckEnabled => _sourceCheckOnStartup;
 
   Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();
@@ -47,8 +57,11 @@ class SettingsService extends ChangeNotifier {
     _textColor = prefs.getString(_textColorKey) ?? '#3E2723';
     _pageTurn = prefs.getString(_pageTurnKey) ?? 'slide';
     _keepScreenOn = prefs.getBool(_keepScreenOnKey) ?? true;
-    _invalidAutoDisable = prefs.getBool(_invalidAutoDisableKey) ?? true;
-    _sourceCheckOnStartup = prefs.getBool(_sourceCheckOnStartupKey) ?? true;
+    // 关键: 默认值从 true 改为 false, 避免老用户被持久化的 true 误禁
+    _invalidAutoDisable = prefs.getBool(_invalidAutoDisableKey) ?? false;
+    // 启动自动检测默认关闭: 用户主动开才会触发
+    _sourceCheckOnStartup = prefs.getBool(_sourceCheckOnStartupKey) ?? false;
+    _firstRunDone = prefs.getBool(_firstRunDoneKey) ?? false;
     notifyListeners();
   }
 
@@ -117,5 +130,13 @@ class SettingsService extends ChangeNotifier {
     notifyListeners();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_sourceCheckOnStartupKey, v);
+  }
+
+  /// 标记首次运行完成 (由 BookSourceService 加载完成时调用)
+  Future<void> markFirstRunDone() async {
+    if (_firstRunDone) return;
+    _firstRunDone = true;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_firstRunDoneKey, true);
   }
 }

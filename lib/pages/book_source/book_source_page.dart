@@ -141,6 +141,10 @@ class BookSourcePage extends StatelessWidget {
             );
           }
 
+          // 顶部恢复横幅: 当所有源都被禁用时, 醒目提示
+          final enabledCount = svc.sources.where((s) => s.isEnabled).length;
+          final allDisabled = enabledCount == 0;
+
           // 按分组归类
           final grouped = <String, List<BookSource>>{};
           for (final s in svc.sources) {
@@ -151,20 +155,99 @@ class BookSourcePage extends StatelessWidget {
 
           return ListView.builder(
             padding: const EdgeInsets.only(bottom: 80),
-            itemCount: groups.length,
+            itemCount: allDisabled ? groups.length + 1 : groups.length,
             itemBuilder: (context, gi) {
-              final group = groups[gi];
+              if (allDisabled && gi == 0) {
+                return Container(
+                  margin: const EdgeInsets.all(12),
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.red.shade50,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.red.shade200),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Icon(Icons.warning_amber, color: Colors.red.shade700),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              '所有书源都被禁用',
+                              style: TextStyle(
+                                color: Colors.red.shade900,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        '书源数据没丢, 全部被标记为禁用. 可能原因:\n'
+                        '• 自动检测把正常源误标为失效\n'
+                        '• 上次手动关闭了所有源\n\n'
+                        '点击下方按钮一键恢复.',
+                        style: TextStyle(
+                            color: Colors.red.shade900, fontSize: 13),
+                      ),
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          FilledButton.icon(
+                            icon: const Icon(Icons.refresh, size: 18),
+                            label: const Text('恢复所有书源'),
+                            onPressed: () async {
+                              await svc.resetAllToDefault();
+                              if (!context.mounted) return;
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text('已恢复所有书源'),
+                                  duration: Duration(seconds: 2),
+                                ),
+                              );
+                            },
+                          ),
+                          const SizedBox(width: 8),
+                          OutlinedButton.icon(
+                            icon: const Icon(Icons.checklist, size: 18),
+                            label: const Text('去手动选择'),
+                            onPressed: () {
+                              // 滚动到列表
+                            },
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                );
+              }
+              final idx = allDisabled ? gi - 1 : gi;
+              final group = groups[idx];
               final items = grouped[group]!;
               return Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Padding(
                     padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
-                    child: Text(
-                      group,
-                      style: context.textStyles.labelMedium?.copyWith(
-                            color: context.colors.primary,
-                          ),
+                    child: Row(
+                      children: [
+                        Text(
+                          group,
+                          style: context.textStyles.labelMedium?.copyWith(
+                                color: context.colors.primary,
+                              ),
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          '${items.where((s) => s.isEnabled).length}/${items.length}',
+                          style: context.textStyles.bodySmall?.copyWith(
+                                color: context.colors.onSurfaceVariant,
+                              ),
+                        ),
+                      ],
                     ),
                   ),
                   for (final src in items) _SourceTile(source: src),

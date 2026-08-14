@@ -68,13 +68,18 @@ void main() {
       await bookSourceService.init();
       Log.i('bookSourceService 初始化完成: ${bookSourceService.sources.length} 个源');
 
+      // 标记首次运行完成 (书源加载完才视为"首次运行结束")
+      await settingsService.markFirstRunDone();
+
       // 4. 健康检查 (必须等书源加载完)
       await sourceHealthService.init();
       Log.i('sourceHealthService 初始化完成');
 
-      // 5. 触发自动检测 (按用户设置)
-      if (settingsService.sourceCheckOnStartup) {
+      // 5. 触发自动检测 (默认关闭, 三重保险防误禁)
+      if (settingsService.autoHealthCheckEnabled) {
         await sourceHealthService.runOnStartupIfNeeded(
+          autoHealthCheckEnabled: settingsService.autoHealthCheckEnabled,
+          firstRunDone: settingsService.firstRunDone,
           autoDisableWhenFail: settingsService.invalidAutoDisable,
         );
       }

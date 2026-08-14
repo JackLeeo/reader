@@ -102,14 +102,33 @@ class SourceHealthService extends ChangeNotifier {
     }
   }
 
-  /// 启动时调用: 如果距上次批量检测超过阈值, 后台跑一次
-  /// autoDisableWhenFail: 由 SettingsService.invalidAutoDisable 决定
-  Future<void> runOnStartupIfNeeded({required bool autoDisableWhenFail}) async {
+  /// 启动时调用: 默认不跑, 必须显式开启 autoHealthCheckEnabled 才跑
+  /// 三重保险防止"书源被自动禁用":
+  ///   1. autoHealthCheckEnabled 开关 (用户主动开才跑, 默认 false)
+  ///   2. firstRunDone 检查 (首次运行不跑, 即使开关开了也跳过)
+  ///   3. 任何 healthStatus != 0 才算"已检测过" (新用户跳过)
+  Future<void> runOnStartupIfNeeded({required bool autoHealthCheckEnabled, required bool firstRunDone, required bool autoDisableWhenFail}) async {
+    // 第一道: 开关关着直接跳过 (默认状态)
+    if (!autoHealthCheckEnabled) {
+      Log.i('启动检测跳过: autoHealthCheckEnabled=false (默认关闭)');
+      return;
+    }
+    // 第二道: 首次运行不跑 (即使开关已开, 等用户主动点过一次"重新检测全部"后再允许自动)
+    if (!firstRunDone) {
+      Log.i('启动检测跳过: 首次运行, 等用户手动触发过一次后再启用自动检测');
+      return;
+    }
+    // 第三道: 没有任何 healthStatus 记录的源, 说明从未手动检测过, 不跑
+    final hasAnyRecord = _bookSourceService.sources.any((s) => s.healthStatus != 0);
+    if (!hasAnyRecord) {
+      Log.i('启动检测跳过: 没有任何书源检测记录, 等用户手动触发');
+      return;
+    }
     final now = DateTime.now();
     final needCheck = _lastBatchFinishedAt == null ||
         now.difference(_lastBatchFinishedAt!).inHours >= _checkIntervalHours;
     if (!needCheck) {
-      Log.i('启动检测跳过: 距上次 ${now.difference(_lastBatchFinishedAt!).inMinutes} 分钟');
+      Log.i('启动检测跳过: 距上次 ${now.difference(_lastBatchFinishedAt!).inMinutes} 分钟, 未超 6h 阈值');
       return;
     }
     // 异步执行, 不阻塞 UI

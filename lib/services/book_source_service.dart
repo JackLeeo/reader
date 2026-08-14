@@ -163,6 +163,17 @@ class BookSourceService extends ChangeNotifier {
     await prefs.setStringList('disabled_sources', []);
   }
 
+  /// 重置所有书源到初始状态 (内置源全启用, 自定义源保留)
+  /// 用于一键恢复"全被禁用"或"全被启用"的状态
+  Future<void> resetAllToDefault() async {
+    for (final s in _sources) {
+      s.isEnabled = true;
+    }
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList('disabled_sources', []);
+  }
+
   /// 公开的通知方法 (供其他服务在外部修改源后触发 UI 刷新)
   void notifyChanged() => notifyListeners();
 }

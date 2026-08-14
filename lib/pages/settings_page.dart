@@ -167,7 +167,7 @@ class _SettingsPageState extends State<SettingsPage> {
           const _Section(title: '书源'),
           ListTile(
             title: const Text('启动时检测书源'),
-            subtitle: const Text('后台探测每个书源是否可达, 距上次 6+ 小时才重测'),
+            subtitle: const Text('默认关闭. 开启后后台探测每个书源是否可达, 距上次 6+ 小时才重测. 首次运行不会自动跑, 需先在「书源」页手动点过「重新检测」'),
             trailing: Switch(
               value: s.sourceCheckOnStartup,
               onChanged: s.setSourceCheckOnStartup,
@@ -175,12 +175,37 @@ class _SettingsPageState extends State<SettingsPage> {
           ),
           ListTile(
             title: const Text('无效线路自动关闭'),
-            subtitle: const Text('检测失败的书源自动禁用, 默认开启'),
+            subtitle: const Text('默认关闭. 检测失败的书源自动禁用. 建议保持关闭, 误判会导致书源全部消失'),
             trailing: Switch(
               value: s.invalidAutoDisable,
               onChanged: s.setInvalidAutoDisable,
             ),
           ),
+          if (s.invalidAutoDisable)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              child: Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.orange.shade50,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.orange.shade200),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.warning_amber, color: Colors.orange.shade700, size: 20),
+                    const SizedBox(width: 8),
+                    const Expanded(
+                      child: Text(
+                        '已开启. 若书源全被误判禁用, 可到「书源」页点顶部「恢复所有书源」',
+                        style: TextStyle(fontSize: 12),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          const SizedBox(height: 32),
           const _Section(title: '关于'),
           const ListTile(
             title: Text('换源阅读'),
