@@ -121,14 +121,8 @@ class RuleEngine {
     if (context is dom.Element) {
       final t = rawRule.trim();
       if (_extractTypes.contains(t) || t.startsWith('@')) {
-        String value;
         final type = t.startsWith('@') ? t.substring(1) : t;
-        if (type.contains('.') && !type.contains(' ')) {
-          // 形如 @data-src 这种属性 (允许带 . 在属性名里? 但属性里不该有 .)
-          value = context.attributes[type] ?? '';
-        } else {
-          value = _extractValue(context, type);
-        }
+        var value = _extractValue(context, type);
         if (replace != null) value = _applyReplace(value, replace);
         if (resolveUrl && value.isNotEmpty) {
           value = _resolveUrl(value);
@@ -203,10 +197,17 @@ class RuleEngine {
     final parts = rule.split('@').map((s) => s.trim()).where((s) => s.isNotEmpty).toList();
     if (parts.isEmpty) return _EvalResult.miss();
 
-    // 是否剥最后为提取类型 (仅在 wantElements=false 时)
+    // 提取类型仅在 wantElements=false 时识别
+    // 1) 已知提取类型 (text/html/src/href 等)
+    // 2) @ 前缀 (@data-id)
+    // 自定义属性 (data-id) 在链跑完后, 看 current[0] 上是否有再决定
     String? extractType;
-    if (!wantElements && parts.length > 1 && _extractTypes.contains(parts.last)) {
-      extractType = parts.removeLast();
+    if (!wantElements && parts.length > 1) {
+      final last = parts.last;
+      if (_extractTypes.contains(last) || last.startsWith('@')) {
+        extractType = last.startsWith('@') ? last.substring(1) : last;
+        parts.removeLast();
+      }
     }
 
     // 初始元素: 有 seeds 用 seeds; 否则从 root 开始
@@ -252,7 +253,13 @@ class RuleEngine {
         continue;
       }
 
-      if (next.isEmpty) return _EvalResult.miss();
+      if (next.isEmpty) {
+        // 链最后一段没匹配, 不立即返回 miss - post-loop 会检查能否当属性名
+        if (i == parts.length - 1) {
+          break;
+        }
+        return _EvalResult.miss();
+      }
       current = next;
     }
 
@@ -261,10 +268,22 @@ class RuleEngine {
     if (wantElements) {
       return _EvalResult(found: true, elements: current);
     }
-    // wantElements=false: 已是最后一组元素
+    // wantElements=false: 取最后一个元素
     final el = current.first;
     if (extractType != null) {
       return _EvalResult(found: true, value: _extractValue(el, extractType));
+    }
+    // 链尾自定义属性 (如 class.X@tag.a@data-id): current[0] 上的 data-id 属性
+    if (parts.isNotEmpty) {
+      final lastSeg = parts.last;
+      if (lastSeg.contains('.') == false &&
+          lastSeg.contains('#') == false &&
+          lastSeg.contains('>') == false &&
+          !lastSeg.contains(RegExp(r'\s')) &&
+          RegExp(r'^[a-zA-Z][\w-]*$').hasMatch(lastSeg) &&
+          el.attributes.containsKey(lastSeg)) {
+        return _EvalResult(found: true, value: el.attributes[lastSeg]!);
+      }
     }
     return _EvalResult(found: true, value: el.text.trim());
   }
@@ -827,11 +846,9 @@ class RuleEngine {
       case 'all':
         return element.text.trim();
       default:
-        // 自定义属性: @data-id, @title 等
-        if (type.startsWith('@')) {
-          return element.attributes[type.substring(1)] ?? '';
-        }
-        return element.text.trim();
+        // 自定义属性 (data-id, data-src, title 等) - 优先当属性名查, 找不到再 fallback text
+        final attrName = type.startsWith('@') ? type.substring(1) : type;
+        return element.attributes[attrName] ?? element.text.trim();
     }
   }
 

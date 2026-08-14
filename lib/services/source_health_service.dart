@@ -58,9 +58,9 @@ class SourceHealthService extends ChangeNotifier {
 
   /// 自定义 Dio (短超时, 不走书源 header)
   late final Dio _dio = Dio(BaseOptions(
-    connectTimeout: const Duration(seconds: 4),
-    receiveTimeout: const Duration(seconds: 6),
-    sendTimeout: const Duration(seconds: 4),
+    connectTimeout: const Duration(seconds: 6),
+    receiveTimeout: const Duration(seconds: 8),
+    sendTimeout: const Duration(seconds: 6),
     followRedirects: true,
     validateStatus: (s) => s != null && s < 500,
     headers: const {
@@ -124,23 +124,34 @@ class SourceHealthService extends ChangeNotifier {
       Log.w('checkAll: 已在检测中, 跳过');
       return const [];
     }
+    final all = _bookSourceService.sources;
+    if (all.isEmpty) {
+      Log.w('checkAll: 书源列表为空, 跳过 (书源可能还在加载)');
+      return const [];
+    }
     _checking = true;
     _checkedCount = 0;
-    _totalCount = _bookSourceService.sources.length;
+    _totalCount = all.length;
     notifyListeners();
 
     final results = <SourceCheckResult>[];
     try {
-      final all = _bookSourceService.sources;
-      // 批次并发 (每批 4 个)
+      // 批次并发 (每批 4 个) - 严格遍历所有源
       const concurrency = 4;
       for (var i = 0; i < all.length; i += concurrency) {
         final batch = <Future<SourceCheckResult>>[];
-        final end = (i + concurrency).clamp(0, all.length);
+        final end = (i + concurrency < all.length)
+            ? i + concurrency
+            : all.length;
         for (var j = i; j < end; j++) {
           batch.add(_checkOneWithCount(all[j]));
         }
-        await Future.wait(batch);
+        // 包一层 try 防止单批失败中断整体
+        try {
+          await Future.wait(batch);
+        } catch (e) {
+          Log.e('批次 $i-$end 检测异常', error: e);
+        }
       }
 
       // 收集所有结果
@@ -165,7 +176,7 @@ class SourceHealthService extends ChangeNotifier {
       }
 
       Log.i(
-          '全量检测完成: ${all.length} 源, 健康 ${all.where((s) => s.healthStatus == 1).length}, 失效 ${all.where((s) => s.healthStatus == 2).length}');
+          '全量检测完成: ${all.length} 源, 健康 ${all.where((s) => s.healthStatus == 1).length}, 失效 ${all.where((s) => s.healthStatus == 2).length}, 未检测 ${all.where((s) => s.healthStatus == 0).length}');
     } catch (e, st) {
       Log.e('全量检测异常', error: e, stack: st);
     } finally {

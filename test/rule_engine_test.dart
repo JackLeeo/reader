@@ -241,6 +241,49 @@ void main() {
       expect(_str(doc, aEl, 'href', resolveUrl: true), 'https://x.com/book/1');
     });
 
+    test('@data-id 自定义属性', () {
+      final doc = _doc('<html><body></body></html>');
+      final engine = RuleEngine(Uri.parse('https://x.com'));
+      final el = html_parser
+          .parse('<a data-id="123" data-name="abc">x</a>')
+          .body!
+          .children
+          .first;
+      expect(_str(doc, el, '@data-id'), '123');
+      expect(_str(doc, el, 'data-name'), 'abc');
+    });
+
+    test('@src 同时取 src 和 data-src', () {
+      final doc = _doc('<html><body></body></html>');
+      final engine = RuleEngine(Uri.parse('https://x.com'));
+      final el1 = html_parser
+          .parse('<img src="/a.png">')
+          .body!
+          .children
+          .first;
+      expect(_str(doc, el1, '@src'), '/a.png');
+      final el2 = html_parser
+          .parse('<img data-src="/b.png">')
+          .body!
+          .children
+          .first;
+      expect(_str(doc, el2, '@src'), '/b.png');
+    });
+
+    test('链式: class.item@tag.a@data-id', () {
+      final doc = _doc('''
+        <html><body>
+          <div class="item">
+            <a data-id="42" href="/x">Title</a>
+          </div>
+        </body></html>
+      ''');
+      final engine = RuleEngine(Uri.parse('https://x.com'));
+      final itemEl = doc.querySelector('.item')!;
+      expect(_str(doc, itemEl, 'class.item@tag.a@data-id'), '42');
+      expect(_str(doc, itemEl, 'class.item@tag.a@text'), 'Title');
+    });
+
     test('链式 + 索引: class.X.0@text', () {
       final doc = _doc('''
         <html><body>

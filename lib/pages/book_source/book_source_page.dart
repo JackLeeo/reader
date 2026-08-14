@@ -62,6 +62,68 @@ class BookSourcePage extends StatelessWidget {
           ),
         ],
       ),
+      bottomNavigationBar: SafeArea(
+        child: Consumer<BookSourceService>(
+          builder: (context, svc, _) {
+            if (svc.sources.isEmpty) return const SizedBox.shrink();
+            final disabledCount =
+                svc.sources.where((s) => !s.isEnabled).length;
+            if (disabledCount == 0) return const SizedBox.shrink();
+            return Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+              child: Row(
+                children: [
+                  Icon(Icons.info_outline,
+                      size: 16, color: context.colors.onSurfaceVariant),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      '已禁用 $disabledCount 个书源',
+                      style: context.textStyles.bodySmall?.copyWith(
+                            color: context.colors.onSurfaceVariant,
+                          ),
+                    ),
+                  ),
+                  TextButton.icon(
+                    icon: const Icon(Icons.refresh, size: 16),
+                    label: const Text('重新启用'),
+                    onPressed: () async {
+                      final ok = await showDialog<bool>(
+                        context: context,
+                        builder: (ctx) => AlertDialog(
+                          title: const Text('重新启用所有书源'),
+                          content: const Text(
+                              '将启用所有被禁用的书源, 包括检测失效的源'),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.pop(ctx, false),
+                              child: const Text('取消'),
+                            ),
+                            FilledButton(
+                              onPressed: () => Navigator.pop(ctx, true),
+                              child: const Text('启用'),
+                            ),
+                          ],
+                        ),
+                      );
+                      if (ok == true) {
+                        await svc.enableAll();
+                        if (!context.mounted) return;
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('已启用所有书源'),
+                            duration: Duration(seconds: 2),
+                          ),
+                        );
+                      }
+                    },
+                  ),
+                ],
+              ),
+            );
+          },
+        ),
+      ),
       body: Consumer<BookSourceService>(
         builder: (context, svc, _) {
           if (svc.sources.isEmpty) {

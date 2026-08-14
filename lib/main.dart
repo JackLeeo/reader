@@ -30,41 +30,56 @@ void main() {
   // 共享章节缓存实例
   final chapterCache = ChapterCacheService();
   final bookSourceService = BookSourceService();
-  bookSourceService.init();
   final sourceHealthService = SourceHealthService(bookSourceService);
   final settingsService = SettingsService();
-  settingsService.init();
   final localBookService = LocalBookService();
-  localBookService.init();
 
-  // 健康检查: 恢复上次状态, 启动时按设置决定是否重新探测
-  () async {
-    try {
-      await sourceHealthService.init();
-      if (settingsService.sourceCheckOnStartup) {
-        await sourceHealthService.runOnStartupIfNeeded(
-          autoDisableWhenFail: settingsService.invalidAutoDisable,
-        );
-      }
-    } catch (e) {
-      Log.w('健康检查初始化异常: $e');
-    }
-  }();
-
+  // 先 runApp 让 UI 立即显示, 避免白屏
+  // 然后在后台串行初始化所有 service, **严格按依赖顺序**:
+  // settings -> book sources (读 1.98MB JSON, 慢) -> source health (依赖 book sources 列表)
   runApp(
     MultiProvider(
       providers: [
         ChangeNotifierProvider.value(value: settingsService),
         ChangeNotifierProvider.value(value: bookSourceService),
         ChangeNotifierProvider.value(value: sourceHealthService),
-        ChangeNotifierProvider(create: (_) => ShelfService()..init()),
-        ChangeNotifierProvider(create: (_) => HistoryService()..init()),
-        ChangeNotifierProvider(create: (_) => BookmarkService()..init()),
-        ChangeNotifierProvider(create: (_) => StatsService()..init()),
+        ChangeNotifierProvider(create: (_) => ShelfService()),
+        ChangeNotifierProvider(create: (_) => HistoryService()),
+        ChangeNotifierProvider(create: (_) => BookmarkService()),
+        ChangeNotifierProvider(create: (_) => StatsService()),
         ChangeNotifierProvider.value(value: chapterCache),
         ChangeNotifierProvider.value(value: localBookService),
       ],
       child: const ReaderApp(),
     ),
   );
+
+  // 后台串行初始化 (顺序很重要: 必须 book sources 加载完才能跑 health check)
+  () async {
+    try {
+      // 1. 设置 (快)
+      await settingsService.init();
+      Log.i('settingsService 初始化完成');
+
+      // 2. 本地书 (快)
+      await localBookService.init();
+
+      // 3. 书源 (慢, 读 1.98MB JSON, 必须等)
+      await bookSourceService.init();
+      Log.i('bookSourceService 初始化完成: ${bookSourceService.sources.length} 个源');
+
+      // 4. 健康检查 (必须等书源加载完)
+      await sourceHealthService.init();
+      Log.i('sourceHealthService 初始化完成');
+
+      // 5. 触发自动检测 (按用户设置)
+      if (settingsService.sourceCheckOnStartup) {
+        await sourceHealthService.runOnStartupIfNeeded(
+          autoDisableWhenFail: settingsService.invalidAutoDisable,
+        );
+      }
+    } catch (e, st) {
+      Log.e('初始化失败', error: e, stack: st);
+    }
+  }();
 }
