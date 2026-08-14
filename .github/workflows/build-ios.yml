@@ -1,8 +1,6 @@
 name: Build iOS IPA (TrollStore)
 
-# 构建 iOS IPA 供 TrollStore 安装
-# 触发: push tag v*, 手动 workflow_dispatch
-
+# 触发: push tag v* 或手动 workflow_dispatch
 on:
   push:
     tags:
@@ -22,7 +20,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  FLUTTER_VERSION: "3.44.2"
+  # Flutter 3.32.x 是当前 stable. 切勿填不存在的版本 (例 3.44.2)
+  FLUTTER_VERSION: "3.32.8"
   BUNDLE_ID: "com.reader.reader"
   PROJECT_NAME: "Reader"
 
@@ -42,8 +41,11 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Show Flutter version
-        run: flutter --version
+      - name: Show Flutter / Xcode versions
+        run: |
+          flutter --version
+          xcodebuild -version
+          sw_vers
 
       - name: Resolve dependencies
         run: flutter pub get
@@ -53,7 +55,7 @@ jobs:
         run: |
           VERSION="${{ github.event.inputs.version }}"
           sed -i.bak "s/^version:.*/version: ${VERSION}+1/" pubspec.yaml
-          cat pubspec.yaml | head -5
+          head -5 pubspec.yaml
 
       - name: Precache iOS artifacts
         run: |
@@ -73,6 +75,7 @@ jobs:
           APP_PATH=$(find build/ios/iphoneos -maxdepth 1 -type d -name "*.app" | head -1)
           if [ -z "$APP_PATH" ]; then
             echo "::error::未找到 .app 包"
+            find build/ios -name "*.app" -type d || true
             exit 1
           fi
           echo "app_path=$APP_PATH" >> $GITHUB_OUTPUT
@@ -88,7 +91,7 @@ jobs:
           echo "build=$BUILD" >> $GITHUB_OUTPUT
           echo "Version: $VERSION ($BUILD)"
 
-      # 决定签名方式：
+      # 签名方式选择：
       # 1) 若提供 IOS_P12_BASE64 等签名密钥 → 用 zsign 签名
       # 2) 否则 → 走「未签名」TrollStore 流程
       - name: Determine signing mode
@@ -101,6 +104,13 @@ jobs:
             echo "mode=unsigned" >> $GITHUB_OUTPUT
             echo "Signing mode: UNSIGNED (TrollStore via ldid/CoreTrust)"
           fi
+
+      - name: Install ldid
+        # TrollStore 走未签名 + ldid ad-hoc 伪签名
+        if: steps.signing.outputs.mode == 'unsigned'
+        run: |
+          brew install ldid || true
+          ldid -h 2>&1 | head -3 || true
 
       - name: Install zsign
         if: steps.signing.outputs.mode == 'signed'
@@ -128,6 +138,35 @@ jobs:
             -o Reader.ipa \
             "${{ steps.locate_app.outputs.app_path }}"
 
+      - name: Ad-hoc pseudo-sign with ldid (TrollStore)
+        # 对所有 framework + dylib 做 ad-hoc 伪签名, 保证 TrollStore 接受
+        if: steps.signing.outputs.mode == 'unsigned'
+        run: |
+          set -e
+          APP_PATH="${{ steps.locate_app.outputs.app_path }}"
+          # Strip 原签名
+          rm -rf "$APP_PATH/_CodeSignature"
+          rm -f  "$APP_PATH/embedded.mobileprovision"
+          # 签主可执行
+          if [ -f "$APP_PATH/${{ env.PROJECT_NAME }}" ]; then
+            ldid -S "$APP_PATH/${{ env.PROJECT_NAME }}" 2>/dev/null || true
+          fi
+          # 签所有 framework
+          if [ -d "$APP_PATH/Frameworks" ]; then
+            for FW in "$APP_PATH/Frameworks/"*.framework; do
+              [ -d "$FW" ] || continue
+              FWNAME=$(basename "$FW" .framework)
+              if [ -f "$FW/$FWNAME" ]; then
+                ldid -S "$FW/$FWNAME" 2>/dev/null || true
+              fi
+            done
+            for DYLIB in "$APP_PATH/Frameworks/"*.dylib; do
+              [ -f "$DYLIB" ] || continue
+              ldid -S "$DYLIB" 2>/dev/null || true
+            done
+          fi
+          echo "✅ ldid ad-hoc signing done"
+
       - name: Package unsigned IPA
         if: steps.signing.outputs.mode == 'unsigned'
         run: |
@@ -138,7 +177,7 @@ jobs:
           /usr/bin/zip -qry "$GITHUB_WORKSPACE/Reader-unsigned-${{ steps.version.outputs.version }}.ipa" Payload
           cd "$GITHUB_WORKSPACE"
           ls -la *.ipa
-          # 验证IPA结构
+          echo "=== IPA 内容预览 ==="
           unzip -l "Reader-unsigned-${{ steps.version.outputs.version }}.ipa" | head -20
 
       - name: Rename signed IPA
@@ -168,8 +207,8 @@ jobs:
           body: |
             ## 下载
 
-            - **未签名 IPA**: 仅供使用 TrollStore 工具签名安装，或开发者自行重签
-            - **签名 IPA** (若提供): 可直接通过 AltStore/Sideloadly/TrollStore 安装
+            - **未签名 IPA**: 适用于 TrollStore 直接安装
+            - **签名 IPA** (若提供): 可通过 AltStore/Sideloadly 安装
 
             ## 安装方式
 
@@ -184,5 +223,16 @@ jobs:
             ## 系统要求
             - iOS 13.0+
             - arm64 设备
+
+            ## 功能特性
+            - 📚 多书源 (兼容 Legado 格式，已内置 1.98MB 完美书源)
+            - 🔍 多源并发聚合搜索
+            - 📖 4 种翻页模式 (无动画/上下滑动/仿真翻页)
+            - 🔖 书签 / 笔记
+            - 🔄 单书内多源切换
+            - 📊 阅读统计 (今日/本周/累计 + 14天柱状图)
+            - 📁 本地 TXT 导入与阅读 (自动章节切分 + GBK/UTF-8 编码探测)
+            - 🎨 6 套主题色 + 自定义字号/行距
+            - 💾 章节缓存 + 自动断点续读
 
             由 GitHub Actions 自动构建

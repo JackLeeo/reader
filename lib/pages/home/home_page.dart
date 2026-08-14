@@ -2,10 +2,13 @@
 import 'package:flutter/material.dart';
 
 import '../book_source/book_source_page.dart';
+import '../settings_page.dart';
 import 'explore_page.dart';
 import 'history_page.dart';
+import 'local_book_list_page.dart';
 import 'search_page.dart';
 import 'shelf_page.dart';
+import 'stats_page.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -22,7 +25,6 @@ class _HomePageState extends State<HomePage> {
     ExplorePage(),
     SearchPage(),
     HistoryPage(),
-    BookSourcePage(),
   ];
 
   @override
@@ -56,13 +58,83 @@ class _HomePageState extends State<HomePage> {
             selectedIcon: Icon(Icons.history),
             label: '历史',
           ),
-          NavigationDestination(
-            icon: Icon(Icons.list_alt_outlined),
-            selectedIcon: Icon(Icons.list_alt),
-            label: '书源',
-          ),
         ],
       ),
+      floatingActionButton: _buildFab(context),
+    );
+  }
+
+  Widget? _buildFab(BuildContext context) {
+    return FloatingActionButton(
+      onPressed: () => _showMore(context),
+      child: const Icon(Icons.more_horiz),
+    );
+  }
+
+  void _showMore(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      builder: (ctx) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: const Icon(Icons.list_alt),
+                title: const Text('书源管理'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => const BookSourcePage(),
+                    ),
+                  );
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.menu_book),
+                title: const Text('本地书库'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => const LocalBookListPage(),
+                    ),
+                  );
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.bar_chart),
+                title: const Text('阅读统计'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => const StatsPage(),
+                    ),
+                  );
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.settings),
+                title: const Text('设置'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => const SettingsPage(),
+                    ),
+                  );
+                },
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 }

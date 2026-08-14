@@ -1,16 +1,16 @@
 // 书籍数据模型
 class Book {
   final String name;
-  final String author;
-  final String coverUrl;
-  final String intro;
-  final String kind;
-  final String lastChapter;
-  final String wordCount;
-  final String tocUrl; // 目录页URL（用于进一步解析章节目录）
-  final String bookUrl; // 书籍详情页URL
-  final String sourceId; // 所属书源ID
-  final String sourceName;
+  String author;
+  String coverUrl;
+  String intro;
+  String kind;
+  String lastChapter;
+  String wordCount;
+  String tocUrl; // 目录页URL（用于进一步解析章节目录）
+  String bookUrl; // 书籍详情页URL
+  String sourceId; // 所属书源ID
+  String sourceName;
 
   Book({
     required this.name,

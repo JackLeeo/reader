@@ -163,15 +163,3 @@ class BookSourceService extends ChangeNotifier {
     await prefs.setStringList('disabled_sources', []);
   }
 }
-
-// 引入ChangeNotifier
-class ChangeNotifier {
-  final List<void Function()> _listeners = [];
-  void addListener(void Function() l) => _listeners.add(l);
-  void removeListener(void Function() l) => _listeners.remove(l);
-  void notifyListeners() {
-    for (final l in _listeners.toList()) {
-      l();
-    }
-  }
-}

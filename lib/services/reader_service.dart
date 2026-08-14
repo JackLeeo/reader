@@ -8,6 +8,7 @@ import '../models/chapter.dart';
 import '../rule_engine/json_selector.dart';
 import '../rule_engine/rule_engine.dart';
 import '../utils/log.dart';
+import 'chapter_cache_service.dart';
 import 'http_client.dart';
 
 class SearchResult {
@@ -19,6 +20,11 @@ class SearchResult {
 
 class ReaderService {
   final HttpClient _http = HttpClient();
+
+  /// 章节缓存（外部注入，便于解耦）
+  ChapterCacheService? chapterCache;
+
+  ReaderService({this.chapterCache});
 
   /// 搜索单本书源
   Future<SearchResult> search(
@@ -363,16 +369,39 @@ class ReaderService {
     return chapters;
   }
 
-  /// 获取章节内容
-  Future<String> getContent(BookSource source, String chapterUrl) async {
+  /// 获取章节内容（带本地缓存）
+  Future<String> getContent(
+    BookSource source,
+    String chapterUrl, {
+    String? bookId,
+    int? chapterIndex,
+    Future<String> Function()? onCacheMiss,
+    bool forceRefresh = false,
+  }) async {
     if (chapterUrl.isEmpty) return '';
+    final cacheService = chapterCache;
+    final keyBookId = bookId ?? chapterUrl;
+    final keyIndex = chapterIndex ?? 0;
+
+    // 1. 试缓存
+    if (!forceRefresh && cacheService != null) {
+      final cached =
+          await cacheService.read(keyBookId, keyIndex, chapterUrl);
+      if (cached != null && cached.isNotEmpty) {
+        Log.i('命中章节缓存 [$chapterIndex] ${chapterUrl}');
+        return cached;
+      }
+    }
+
+    // 2. 联网
     Log.i('获取内容 [${source.bookSourceName}] $chapterUrl');
     final resp = await _http.get(chapterUrl, source: source);
     if (resp.statusCode != 200 || resp.data == null) return '';
 
     final body = resp.data!;
     final engine = RuleEngine(Uri.parse(chapterUrl));
-    final isJson = body.trimLeft().startsWith('{') || body.trimLeft().startsWith('[');
+    final isJson =
+        body.trimLeft().startsWith('{') || body.trimLeft().startsWith('[');
 
     String content;
     if (isJson) {
@@ -394,6 +423,39 @@ class ReaderService {
       content = _applyReplaceRules(content, replace);
     }
 
+    content = content.trim();
+    if (content.isNotEmpty && cacheService != null) {
+      await cacheService.write(keyBookId, keyIndex, chapterUrl, content);
+    }
+    return content;
+  }
+
+  /// 直接拉取，不走缓存（换源预热）
+  Future<String> fetchRawContent(BookSource source, String chapterUrl) async {
+    if (chapterUrl.isEmpty) return '';
+    final resp = await _http.get(chapterUrl, source: source);
+    if (resp.statusCode != 200 || resp.data == null) return '';
+    final body = resp.data!;
+    final engine = RuleEngine(Uri.parse(chapterUrl));
+    final isJson =
+        body.trimLeft().startsWith('{') || body.trimLeft().startsWith('[');
+    String content;
+    if (isJson) {
+      final json = JsonSelector(RuleEngine.parseJson(body));
+      final contentPath = source.ruleContent['content']?.toString() ?? '';
+      content = json.select(contentPath)?.string ?? '';
+    } else {
+      final doc = html_parser.parse(body);
+      content = engine.selectString(
+        doc,
+        doc.body,
+        source.ruleContent['content']?.toString() ?? '@text',
+      );
+    }
+    final replace = source.ruleContent['replaceRegex']?.toString() ?? '';
+    if (replace.isNotEmpty && content.isNotEmpty) {
+      content = _applyReplaceRules(content, replace);
+    }
     return content.trim();
   }
 
