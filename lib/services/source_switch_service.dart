@@ -2,7 +2,6 @@
 import 'package:flutter/foundation.dart';
 
 import '../models/book.dart';
-import '../models/book_source.dart';
 import '../utils/log.dart';
 import 'book_source_service.dart';
 import 'reader_service.dart';

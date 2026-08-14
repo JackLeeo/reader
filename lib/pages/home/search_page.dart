@@ -1,6 +1,7 @@
 // 搜索页 - 多源聚合搜索
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -96,7 +97,8 @@ class _SearchPageState extends State<SearchPage> {
           }
         });
       } catch (e, st) {
-        Log.w('搜索源失败 [${src.bookSourceName}]: $e', stack: st);
+        Log.w('搜索源失败 [${src.bookSourceName}]: $e');
+        if (kDebugMode) debugPrint('Search stack: $st');
       } finally {
         if (mounted) {
           setState(() {

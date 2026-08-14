@@ -123,7 +123,7 @@ class ReaderService {
       lastChapter: get('lastChapter'),
       wordCount: get('wordCount'),
       tocUrl: get('tocUrl', resolveUrl: true),
-      bookUrl: get('bookUrl', resolveUrl: true, def: el.baseUri?.toString() ?? ''),
+      bookUrl: get('bookUrl', resolveUrl: true, def: engine.baseUri.toString()),
       sourceId: source.id,
       sourceName: source.bookSourceName,
     );
@@ -222,7 +222,7 @@ class ReaderService {
       lastChapter: get('lastChapter'),
       wordCount: get('wordCount'),
       tocUrl: get('tocUrl', resolveUrl: true),
-      bookUrl: get('bookUrl', resolveUrl: true, def: el.baseUri?.toString() ?? ''),
+      bookUrl: get('bookUrl', resolveUrl: true, def: engine.baseUri.toString()),
       sourceId: source.id,
       sourceName: source.bookSourceName,
     );

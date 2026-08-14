@@ -4,7 +4,6 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import '../../models/local_book.dart';
 import '../../services/local_book_service.dart';
 import '../../utils/log.dart';
 import '../../widgets/empty_state.dart';

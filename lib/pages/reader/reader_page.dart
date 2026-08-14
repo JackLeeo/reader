@@ -7,7 +7,7 @@ import '../../models/book.dart';
 import '../../models/bookmark.dart';
 import '../../models/chapter.dart';
 import '../../models/history_item.dart';
-import '../../models/shelf_book.dart';
+import '../../models/reading_stats.dart';
 import '../../services/book_source_service.dart';
 import '../../services/bookmark_service.dart';
 import '../../services/chapter_cache_service.dart';
@@ -17,12 +17,10 @@ import '../../services/settings_service.dart';
 import '../../services/shelf_service.dart';
 import '../../services/source_switch_service.dart';
 import '../../services/stats_service.dart';
-import '../../utils/extensions.dart';
 import '../../utils/log.dart';
 import '../../widgets/empty_state.dart';
 import '../book/chapter_list_page.dart';
 import 'reader_settings_sheet.dart';
-import 'local_reader_page.dart';
 import 'bookmark_list_sheet.dart';
 import 'source_switch_sheet.dart';
 
@@ -57,7 +55,6 @@ class _ReaderPageState extends State<ReaderPage> {
   DateTime _sessionStart = DateTime.now();
   int _initialCharsRead = 0;
   PageController? _pageController;
-  int _pageCount = 0;
 
   @override
   void initState() {
@@ -148,7 +145,6 @@ class _ReaderPageState extends State<ReaderPage> {
         _loading = false;
         _pageController?.dispose();
         _pageController = null;
-        _pageCount = 0;
       });
       _scrollController.jumpTo(_startOffset.toDouble());
       _startOffset = 0;
@@ -727,6 +723,6 @@ class _ReaderPageState extends State<ReaderPage> {
     if (hex.isEmpty) return null;
     var h = hex.replaceFirst('#', '');
     if (h.length == 6) h = 'FF$h';
-    return Color(int.tryParse(h, radix: 16));
+    return Color(int.tryParse(h, radix: 16) ?? 0xFF000000);
   }
 }

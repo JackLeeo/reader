@@ -19,7 +19,7 @@ void main() {
       expect(s, isNull);
     });
 
-    test('select $.field', () {
+    test('select with dot path', () {
       final s = JsonSelector(JsonSelector.decode('{"a": {"b": 42}}'));
       expect(s.select('a.b')?.string, '42');
     });
@@ -39,7 +39,7 @@ void main() {
 
     test('empty path returns self', () {
       final s = JsonSelector({'a': 1});
-      final sel = s.select('\$');
+      final sel = s.select(r'$');
       expect(sel, isNotNull);
     });
   });

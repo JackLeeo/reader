@@ -39,7 +39,7 @@ class RuleEngine {
       for (final step in part.split('&&')) {
         final stepTrim = step.trim();
         if (stepTrim.isEmpty) continue;
-        final elements = _applyStep(document.body, stepTrim);
+        final elements = _applyStep(document.body!, stepTrim);
         if (elements.isEmpty) {
           all.clear();
           break;

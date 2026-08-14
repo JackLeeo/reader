@@ -5,11 +5,11 @@ import 'package:provider/provider.dart';
 
 import '../../models/bookmark.dart';
 import '../../models/local_book.dart';
+import '../../models/reading_stats.dart';
 import '../../services/bookmark_service.dart';
 import '../../services/local_book_service.dart';
 import '../../services/settings_service.dart';
 import '../../services/stats_service.dart';
-import '../../utils/log.dart';
 import '../../widgets/empty_state.dart';
 import 'bookmark_list_sheet.dart';
 import 'reader_settings_sheet.dart';
@@ -409,6 +409,6 @@ class _LocalReaderPageState extends State<LocalReaderPage> {
     if (hex.isEmpty) return null;
     var h = hex.replaceFirst('#', '');
     if (h.length == 6) h = 'FF$h';
-    return Color(int.tryParse(h, radix: 16));
+    return Color(int.tryParse(h, radix: 16) ?? 0xFF000000);
   }
 }

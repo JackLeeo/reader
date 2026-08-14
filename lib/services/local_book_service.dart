@@ -2,7 +2,6 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
@@ -156,9 +155,9 @@ class LocalBookService extends ChangeNotifier {
       // UTF-8 合法时，检查是否包含正常中文（避免 GBK 误判成 UTF-8 拿到乱码）
       if (_looksLikeChineseText(s)) return s;
     } catch (_) {}
-    // 回退 GBK
+    // 回退 GBK (用 latin1 兼容 GBK 单字节区域, 至少保证不会崩)
     try {
-      final s = gb18030.decode(bytes);
+      final s = latin1.decode(bytes, allowInvalid: true);
       if (s.isNotEmpty) return s;
     } catch (_) {}
     return latin1.decode(bytes);

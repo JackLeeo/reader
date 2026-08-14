@@ -8,7 +8,7 @@ class JsonSelector {
 
   /// 简易JSONPath: $.field.subfield[0]
   JsonSelector? select(String path) {
-    if (path.isEmpty || path == '$') return this;
+    if (path.isEmpty || path == r'$') return this;
     var p = path.startsWith(r'$.') ? path.substring(2) : path;
     if (p.isEmpty) return this;
     return _selectPath(p);
@@ -21,7 +21,7 @@ class JsonSelector {
       if (cur == null) return null;
       if (seg.isIndex) {
         if (cur is List && seg.index! < cur.length) {
-          cur = cur[seg.index];
+          cur = cur[seg.index!];
         } else {
           return null;
         }

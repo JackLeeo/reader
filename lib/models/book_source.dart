@@ -111,6 +111,13 @@ class BookSource {
   }
 
   factory BookSource.fromJson(Map<String, dynamic> json) {
+    int readInt(dynamic v, {int fallback = 0}) {
+      if (v is int) return v;
+      if (v is num) return v.toInt();
+      if (v is String) return int.tryParse(v) ?? fallback;
+      return fallback;
+    }
+
     Map<String, dynamic> ruleMap(String key) {
       final v = json[key];
       if (v is Map) {
@@ -145,9 +152,7 @@ class BookSource {
       bookSourceUrl: (json['bookSourceUrl'] ?? '').toString(),
       bookSourceGroup: (json['bookSourceGroup'] ?? '').toString(),
       bookSourceComment: (json['bookSourceComment'] ?? '').toString(),
-      bookSourceType: (json['bookSourceType'] ?? 0) is int
-          ? json['bookSourceType'] as int
-          : int.tryParse(json['bookSourceType']?.toString() ?? '0') ?? 0,
+      bookSourceType: readInt(json['bookSourceType']),
       bookUrlPattern: (json['bookUrlPattern'] ?? '').toString(),
       searchUrl: (json['searchUrl'] ?? '').toString(),
       exploreUrl: (json['exploreUrl'] ?? '').toString(),
@@ -158,12 +163,8 @@ class BookSource {
       ruleExplore: ruleMap('ruleExplore'),
       header: headerMap,
       enabled: json['enabled'] != false,
-      customOrder: (json['customOrder'] ?? 0) is int
-          ? json['customOrder'] as int
-          : int.tryParse(json['customOrder']?.toString() ?? '0') ?? 0,
-      weight: (json['weight'] ?? 0) is int
-          ? json['weight'] as int
-          : int.tryParse(json['weight']?.toString() ?? '0') ?? 0,
+      customOrder: readInt(json['customOrder']),
+      weight: readInt(json['weight']),
     );
   }
 

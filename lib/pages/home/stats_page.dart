@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../services/stats_service.dart';
-import '../../widgets/empty_state.dart';
 
 class StatsPage extends StatelessWidget {
   const StatsPage({super.key});
