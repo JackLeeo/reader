@@ -1,0 +1,50 @@
+name: reader
+description: "iOS换源电子书阅读器，支持Legado书源、TrollStore安装。"
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.4.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+
+  cupertino_icons: ^1.0.8
+
+  # 网络请求
+  http: ^1.2.2
+  dio: ^5.7.0
+
+  # 数据存储
+  shared_preferences: ^2.3.2
+  path_provider: ^2.1.4
+  path: ^1.9.0
+
+  # 解析
+  html: ^0.15.5
+  crypto: ^3.0.5
+
+  # 工具
+  intl: ^0.20.2
+  url_launcher: ^6.3.1
+  share_plus: ^10.0.2
+
+  # 状态管理
+  provider: ^6.1.2
+
+  # WebView（备用：用于显示图片或登录）
+  webview_flutter: ^4.10.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/book_sources/
+    - assets/images/

@@ -1,0 +1,188 @@
+name: Build iOS IPA (TrollStore)
+
+# 构建 iOS IPA 供 TrollStore 安装
+# 触发: push tag v*, 手动 workflow_dispatch
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "版本号 (例如 1.0.0)，留空则从 pubspec.yaml 读取"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ios-build
+  cancel-in-progress: true
+
+env:
+  FLUTTER_VERSION: "3.44.2"
+  BUNDLE_ID: "com.reader.reader"
+  PROJECT_NAME: "Reader"
+
+jobs:
+  build-ios:
+    name: Build iOS IPA
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Show Flutter version
+        run: flutter --version
+
+      - name: Resolve dependencies
+        run: flutter pub get
+
+      - name: Set version (if provided)
+        if: ${{ github.event.inputs.version != '' }}
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          sed -i.bak "s/^version:.*/version: ${VERSION}+1/" pubspec.yaml
+          cat pubspec.yaml | head -5
+
+      - name: Precache iOS artifacts
+        run: |
+          flutter precache --ios
+          yes | flutter doctor --android-licenses 2>/dev/null || true
+
+      - name: Build iOS (no codesign)
+        # flutter build ios 会自动创建 Podfile 并执行 pod install
+        run: |
+          flutter build ios \
+            --release \
+            --no-codesign
+
+      - name: Locate built .app
+        id: locate_app
+        run: |
+          APP_PATH=$(find build/ios/iphoneos -maxdepth 1 -type d -name "*.app" | head -1)
+          if [ -z "$APP_PATH" ]; then
+            echo "::error::未找到 .app 包"
+            exit 1
+          fi
+          echo "app_path=$APP_PATH" >> $GITHUB_OUTPUT
+          echo "Built app: $APP_PATH"
+          ls -la "$APP_PATH"
+
+      - name: Read version
+        id: version
+        run: |
+          VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "${{ steps.locate_app.outputs.app_path }}/Info.plist")
+          BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "${{ steps.locate_app.outputs.app_path }}/Info.plist")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "build=$BUILD" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION ($BUILD)"
+
+      # 决定签名方式：
+      # 1) 若提供 IOS_P12_BASE64 等签名密钥 → 用 zsign 签名
+      # 2) 否则 → 走「未签名」TrollStore 流程
+      - name: Determine signing mode
+        id: signing
+        run: |
+          if [ -n "${{ secrets.IOS_P12_BASE64 }}" ] && [ -n "${{ secrets.IOS_P12_PASSWORD }}" ] && [ -n "${{ secrets.IOS_MOBILE_PROVISION_BASE64 }}" ]; then
+            echo "mode=signed" >> $GITHUB_OUTPUT
+            echo "Signing mode: SIGNED (with personal certificate)"
+          else
+            echo "mode=unsigned" >> $GITHUB_OUTPUT
+            echo "Signing mode: UNSIGNED (TrollStore via ldid/CoreTrust)"
+          fi
+
+      - name: Install zsign
+        if: steps.signing.outputs.mode == 'signed'
+        run: |
+          brew install zsign
+          zsign --help
+
+      - name: Decode signing material
+        if: steps.signing.outputs.mode == 'signed'
+        run: |
+          mkdir -p signing
+          echo "${{ secrets.IOS_P12_BASE64 }}" | base64 --decode > signing/cert.p12
+          echo "${{ secrets.IOS_MOBILE_PROVISION_BASE64 }}" | base64 --decode > signing/profile.mobileprovision
+          ls -la signing/
+
+      - name: Sign with zsign
+        if: steps.signing.outputs.mode == 'signed'
+        working-directory: signing
+        run: |
+          zsign \
+            -k cert.p12 \
+            -p "${{ secrets.IOS_P12_PASSWORD }}" \
+            -m profile.mobileprovision \
+            -b "${{ env.BUNDLE_ID }}" \
+            -o Reader.ipa \
+            "${{ steps.locate_app.outputs.app_path }}"
+
+      - name: Package unsigned IPA
+        if: steps.signing.outputs.mode == 'unsigned'
+        run: |
+          STAGING_DIR=$(mktemp -d -t reader-ipa-XXXXXX)
+          mkdir -p "$STAGING_DIR/Payload"
+          cp -R "${{ steps.locate_app.outputs.app_path }}" "$STAGING_DIR/Payload/"
+          cd "$STAGING_DIR"
+          /usr/bin/zip -qry "$GITHUB_WORKSPACE/Reader-unsigned-${{ steps.version.outputs.version }}.ipa" Payload
+          cd "$GITHUB_WORKSPACE"
+          ls -la *.ipa
+          # 验证IPA结构
+          unzip -l "Reader-unsigned-${{ steps.version.outputs.version }}.ipa" | head -20
+
+      - name: Rename signed IPA
+        if: steps.signing.outputs.mode == 'signed'
+        run: |
+          mv signing/Reader.ipa "Reader-signed-${{ steps.version.outputs.version }}.ipa"
+          ls -la *.ipa
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: reader-ios-ipa
+          path: |
+            Reader-*.ipa
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            Reader-*.ipa
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          body: |
+            ## 下载
+
+            - **未签名 IPA**: 仅供使用 TrollStore 工具签名安装，或开发者自行重签
+            - **签名 IPA** (若提供): 可直接通过 AltStore/Sideloadly/TrollStore 安装
+
+            ## 安装方式
+
+            ### TrollStore (推荐)
+            1. 在已安装 TrollStore 的设备上打开 IPA
+            2. 选择「安装」即可
+
+            ### AltStore / Sideloadly
+            1. 使用未签名 IPA 通过 AltStore 或 Sideloadly 签名安装
+            2. 需要 Apple ID (免费账户7天有效，付费账户1年)
+
+            ## 系统要求
+            - iOS 13.0+
+            - arm64 设备
+
+            由 GitHub Actions 自动构建
