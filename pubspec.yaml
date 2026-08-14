@@ -1,7 +1,7 @@
 name: reader
 description: "iOS换源电子书阅读器，支持Legado书源、TrollStore安装。"
 publish_to: 'none'
-version: 1.0.1+2
+version: 1.0.3+3
 
 environment:
   sdk: '>=3.4.0 <4.0.0'
