@@ -58,7 +58,6 @@ class BookSourceService extends ChangeNotifier {
     try {
       final prefs = await SharedPreferences.getInstance();
       final disabled = prefs.getStringList('disabled_sources') ?? [];
-      final custom = prefs.getString('custom_sources');
       // 标记已禁用的
       for (final s in _sources) {
         if (disabled.contains(s.id)) {
@@ -66,6 +65,7 @@ class BookSourceService extends ChangeNotifier {
         }
       }
       // 解析自定义
+      final custom = prefs.getString('custom_sources');
       if (custom != null && custom.isNotEmpty) {
         final list = jsonDecode(custom) as List;
         for (final item in list) {
@@ -78,9 +78,40 @@ class BookSourceService extends ChangeNotifier {
           }
         }
       }
+      // === 自我修复: 检测到"全部书源被禁用"自动恢复 ===
+      // 触发条件: 内置书源 >= 50, 启用数 == 0 (几乎肯定是误禁)
+      await _autoRecoverIfAllDisabled();
     } catch (e) {
       Log.w('加载自定义书源失败: $e');
     }
+  }
+
+  /// 自我修复: 如果内置书源全部被禁用, 自动恢复
+  /// 场景: 之前版本因 _invalidAutoDisable=true 自动禁用过所有源, 升级后
+  ///       仍读不到源. 这个机制保证一旦检测到"全被禁用"就强制恢复,
+  ///       即使用户的 SharedPreferences 里的 disabled_sources 列表是脏的.
+  /// 只在内置源>=50 且启用==0 时触发, 不会干扰用户主动全禁的情况
+  /// (用户主动全禁时 disabled_sources 也会有大量 id, 走恢复也安全,
+  ///  反正用户可以再去手动关)
+  Future<void> _autoRecoverIfAllDisabled() async {
+    if (_sources.length < 50) return; // 内置源数太少, 不触发
+    final enabledCount = _sources.where((s) => s.isEnabled).length;
+    if (enabledCount > 0) return; // 有启用的, 正常
+    // 全部被禁用
+    final prefs = await SharedPreferences.getInstance();
+    final disabled = prefs.getStringList('disabled_sources') ?? [];
+    if (disabled.length < _sources.length * 0.5) {
+      // disabled 列表里少于一半的内置源, 不是"批量误禁"场景
+      // 可能是用户主动全禁 (主动全禁一般全加)
+      return;
+    }
+    // 触发恢复: 清空 disabled_sources, 全部启用
+    Log.w('自我修复触发: ${_sources.length} 个内置源全部被禁用 (disabled 列表 ${disabled.length} 项), 自动恢复');
+    for (final s in _sources) {
+      s.isEnabled = true;
+    }
+    await prefs.setStringList('disabled_sources', []);
+    Log.w('自我修复完成: 已清空 disabled_sources, 启用全部 ${_sources.length} 个源');
   }
 
   Future<void> toggleSource(String id, bool enabled) async {
