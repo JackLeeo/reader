@@ -162,4 +162,7 @@ class BookSourceService extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setStringList('disabled_sources', []);
   }
+
+  /// 公开的通知方法 (供其他服务在外部修改源后触发 UI 刷新)
+  void notifyChanged() => notifyListeners();
 }

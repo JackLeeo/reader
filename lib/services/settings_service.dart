@@ -10,6 +10,8 @@ class SettingsService extends ChangeNotifier {
   static const _textColorKey = 'reader_text_color';
   static const _pageTurnKey = 'reader_page_turn';
   static const _keepScreenOnKey = 'reader_keep_screen_on';
+  static const _invalidAutoDisableKey = 'invalid_auto_disable';
+  static const _sourceCheckOnStartupKey = 'source_check_on_startup';
 
   ThemeMode _themeMode = ThemeMode.system;
   double _fontSize = 18.0;
@@ -18,6 +20,8 @@ class SettingsService extends ChangeNotifier {
   String _textColor = '#3E2723';
   String _pageTurn = 'slide'; // slide / curl / none
   bool _keepScreenOn = true;
+  bool _invalidAutoDisable = true; // 无效书源自动禁用 (默认开启)
+  bool _sourceCheckOnStartup = true; // 启动时自动检测书源 (默认开启)
 
   ThemeMode get themeMode => _themeMode;
   double get fontSize => _fontSize;
@@ -26,6 +30,8 @@ class SettingsService extends ChangeNotifier {
   String get textColor => _textColor;
   String get pageTurn => _pageTurn;
   bool get keepScreenOn => _keepScreenOn;
+  bool get invalidAutoDisable => _invalidAutoDisable;
+  bool get sourceCheckOnStartup => _sourceCheckOnStartup;
 
   Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();
@@ -41,6 +47,8 @@ class SettingsService extends ChangeNotifier {
     _textColor = prefs.getString(_textColorKey) ?? '#3E2723';
     _pageTurn = prefs.getString(_pageTurnKey) ?? 'slide';
     _keepScreenOn = prefs.getBool(_keepScreenOnKey) ?? true;
+    _invalidAutoDisable = prefs.getBool(_invalidAutoDisableKey) ?? true;
+    _sourceCheckOnStartup = prefs.getBool(_sourceCheckOnStartupKey) ?? true;
     notifyListeners();
   }
 
@@ -95,5 +103,19 @@ class SettingsService extends ChangeNotifier {
     notifyListeners();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_keepScreenOnKey, v);
+  }
+
+  Future<void> setInvalidAutoDisable(bool v) async {
+    _invalidAutoDisable = v;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_invalidAutoDisableKey, v);
+  }
+
+  Future<void> setSourceCheckOnStartup(bool v) async {
+    _sourceCheckOnStartup = v;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_sourceCheckOnStartupKey, v);
   }
 }

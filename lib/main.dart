@@ -11,6 +11,7 @@ import 'services/history_service.dart';
 import 'services/local_book_service.dart';
 import 'services/settings_service.dart';
 import 'services/shelf_service.dart';
+import 'services/source_health_service.dart';
 import 'services/stats_service.dart';
 import 'utils/log.dart';
 
@@ -30,14 +31,32 @@ void main() {
   final chapterCache = ChapterCacheService();
   final bookSourceService = BookSourceService();
   bookSourceService.init();
+  final sourceHealthService = SourceHealthService(bookSourceService);
+  final settingsService = SettingsService();
+  settingsService.init();
   final localBookService = LocalBookService();
   localBookService.init();
+
+  // 健康检查: 恢复上次状态, 启动时按设置决定是否重新探测
+  () async {
+    try {
+      await sourceHealthService.init();
+      if (settingsService.sourceCheckOnStartup) {
+        await sourceHealthService.runOnStartupIfNeeded(
+          autoDisableWhenFail: settingsService.invalidAutoDisable,
+        );
+      }
+    } catch (e) {
+      Log.w('健康检查初始化异常: $e');
+    }
+  }();
 
   runApp(
     MultiProvider(
       providers: [
-        ChangeNotifierProvider(create: (_) => SettingsService()..init()),
+        ChangeNotifierProvider.value(value: settingsService),
         ChangeNotifierProvider.value(value: bookSourceService),
+        ChangeNotifierProvider.value(value: sourceHealthService),
         ChangeNotifierProvider(create: (_) => ShelfService()..init()),
         ChangeNotifierProvider(create: (_) => HistoryService()..init()),
         ChangeNotifierProvider(create: (_) => BookmarkService()..init()),

@@ -5,6 +5,8 @@ import 'package:provider/provider.dart';
 
 import '../../models/book_source.dart';
 import '../../services/book_source_service.dart';
+import '../../services/settings_service.dart';
+import '../../services/source_health_service.dart';
 import '../../utils/extensions.dart';
 import '../../widgets/empty_state.dart';
 import 'add_source_page.dart';
@@ -19,6 +21,32 @@ class BookSourcePage extends StatelessWidget {
         title: const Text('书源管理'),
         centerTitle: false,
         actions: [
+          Consumer<SourceHealthService>(
+            builder: (context, health, _) {
+              if (health.isChecking) {
+                return Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  child: Center(
+                    child: SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        value: health.totalCount == 0
+                            ? null
+                            : health.checkedCount / health.totalCount,
+                      ),
+                    ),
+                  ),
+                );
+              }
+              return IconButton(
+                icon: const Icon(Icons.network_check),
+                tooltip: '重新检测全部',
+                onPressed: () => _runCheckAll(context),
+              );
+            },
+          ),
           IconButton(
             icon: const Icon(Icons.add_link),
             tooltip: '导入',
@@ -86,6 +114,19 @@ class BookSourcePage extends StatelessWidget {
       ),
     );
   }
+
+  void _runCheckAll(BuildContext context) {
+    final settings = context.read<SettingsService>();
+    context.read<SourceHealthService>().checkAll(
+          autoDisableWhenFail: settings.invalidAutoDisable,
+        );
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('开始检测全部书源...'),
+        duration: Duration(seconds: 2),
+      ),
+    );
+  }
 }
 
 class _SourceTile extends StatelessWidget {
@@ -94,32 +135,127 @@ class _SourceTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return SwitchListTile(
-      title: Text(source.bookSourceName),
-      subtitle: Text(
-        source.bookSourceUrl,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: context.textStyles.bodySmall?.copyWith(
-              color: context.colors.onSurfaceVariant,
-            ),
-      ),
-      secondary: IconButton(
-        icon: const Icon(Icons.copy, size: 18),
-        onPressed: () {
-          Clipboard.setData(ClipboardData(text: source.bookSourceUrl));
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('已复制书源地址'),
-              duration: Duration(seconds: 2),
-            ),
-          );
-        },
-      ),
-      value: source.isEnabled,
-      onChanged: (v) {
-        context.read<BookSourceService>().toggleSource(source.id, v);
+    return Consumer<SourceHealthService>(
+      builder: (context, health, _) {
+        return SwitchListTile(
+          title: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  source.bookSourceName,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              const SizedBox(width: 8),
+              _HealthBadge(status: source.healthStatus, error: source.healthError),
+            ],
+          ),
+          subtitle: Text(
+            source.bookSourceUrl,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: context.textStyles.bodySmall?.copyWith(
+                  color: context.colors.onSurfaceVariant,
+                ),
+          ),
+          secondary: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              IconButton(
+                icon: const Icon(Icons.refresh, size: 18),
+                tooltip: '重新检测',
+                onPressed: health.isChecking
+                    ? null
+                    : () async {
+                        final r =
+                            await health.recheckOne(source);
+                        if (!context.mounted) return;
+                        final msg = r.ok
+                            ? '正常 (${r.statusCode})'
+                            : '失效: ${r.error ?? "?"}';
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text('${source.bookSourceName} - $msg'),
+                            duration: const Duration(seconds: 2),
+                          ),
+                        );
+                      },
+              ),
+              IconButton(
+                icon: const Icon(Icons.copy, size: 18),
+                tooltip: '复制地址',
+                onPressed: () {
+                  Clipboard.setData(
+                      ClipboardData(text: source.bookSourceUrl));
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('已复制书源地址'),
+                      duration: Duration(seconds: 2),
+                    ),
+                  );
+                },
+              ),
+            ],
+          ),
+          value: source.isEnabled,
+          onChanged: (v) {
+            context.read<BookSourceService>().toggleSource(source.id, v);
+          },
+        );
       },
+    );
+  }
+}
+
+/// 书源健康状态徽标
+class _HealthBadge extends StatelessWidget {
+  final int status; // 0=未检测, 1=正常, 2=失效
+  final String? error;
+  const _HealthBadge({required this.status, this.error});
+
+  @override
+  Widget build(BuildContext context) {
+    Color color;
+    IconData icon;
+    String text;
+    switch (status) {
+      case 1:
+        color = Colors.green;
+        icon = Icons.check_circle;
+        text = '正常';
+        break;
+      case 2:
+        color = Colors.red;
+        icon = Icons.error;
+        text = '失效';
+        break;
+      default:
+        color = Colors.grey;
+        icon = Icons.help_outline;
+        text = '待检测';
+    }
+    return Tooltip(
+      message: error ?? text,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.12),
+          borderRadius: BorderRadius.circular(4),
+          border: Border.all(color: color.withValues(alpha: 0.4), width: 0.5),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 12, color: color),
+            const SizedBox(width: 3),
+            Text(
+              text,
+              style: TextStyle(fontSize: 11, color: color),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

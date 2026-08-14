@@ -37,6 +37,11 @@ class BookSource {
   final int customOrder;
   final int weight;
 
+  // 健康检查状态 (内存态, 由 SourceHealthService 维护并写盘)
+  int healthStatus; // 0=未检测, 1=正常, 2=失效
+  String? healthError;
+  DateTime? healthCheckedAt;
+
   // 内部状态
   bool _enabled;
 
@@ -58,6 +63,9 @@ class BookSource {
     this.enabled = true,
     this.customOrder = 0,
     this.weight = 0,
+    this.healthStatus = 0,
+    this.healthError,
+    this.healthCheckedAt,
   }) : _enabled = enabled;
 
   bool get isEnabled => _enabled;

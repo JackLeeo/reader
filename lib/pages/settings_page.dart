@@ -164,6 +164,23 @@ class _SettingsPageState extends State<SettingsPage> {
               child: const Text('清空'),
             ),
           ),
+          const _Section(title: '书源'),
+          ListTile(
+            title: const Text('启动时检测书源'),
+            subtitle: const Text('后台探测每个书源是否可达, 距上次 6+ 小时才重测'),
+            trailing: Switch(
+              value: s.sourceCheckOnStartup,
+              onChanged: s.setSourceCheckOnStartup,
+            ),
+          ),
+          ListTile(
+            title: const Text('无效线路自动关闭'),
+            subtitle: const Text('检测失败的书源自动禁用, 默认开启'),
+            trailing: Switch(
+              value: s.invalidAutoDisable,
+              onChanged: s.setInvalidAutoDisable,
+            ),
+          ),
           const _Section(title: '关于'),
           const ListTile(
             title: Text('换源阅读'),
