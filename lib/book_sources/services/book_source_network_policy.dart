@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import '../protocol/book_source_protocol.dart';
@@ -69,19 +71,94 @@ class BookSourceNetworkPolicy {
     }
     final inFlight = _dnsInFlight[host];
     if (inFlight != null) return inFlight;
-    // 系统 DNS 解析器在无响应时会长时间内部重试，这里强制 5s 超时，
-    // 避免聚合搜索时单个域名拖垮整体进度。widget 测试环境下真实 DNS
-    // 查询不会完成，超时定时器会在 teardown 时以 pending timer 报错，
-    // 因此仅在真实运行时启用该上限。
-    final lookup = _dnsTimeoutEnabled
-        ? _lookup(host).timeout(const Duration(seconds: 5))
-        : _lookup(host);
-    final future = lookup.then((addresses) {
-      if (addresses.isNotEmpty) _storeDns(host, addresses);
-      return addresses;
-    }).whenComplete(() => _dnsInFlight.remove(host));
+    final future = _resolveWithDohRace(host);
     _dnsInFlight[host] = future;
+    // 回调必须是 void 语句体。若写成 `() => _dnsInFlight.remove(host)`,
+    // 返回值是刚存入的 future 本身, whenComplete 会把它当 FutureOr
+    // 等待, 形成 "future 等待自己完成" 的自引用死锁——表现为所有冷
+    // DNS 解析永久挂起、聚合搜索大面积超时。
+    // 包装 future 的结果调用方不消费, 必须 ignore 掉, 否则解析失败时
+    // 它会以无监听错误完成, 变成 unhandled async error。
+    future
+        .whenComplete(() {
+          _dnsInFlight.remove(host);
+        })
+        .ignore();
     return future;
+  }
+
+  /// 系统解析与公共 DoH (223.5.5.5) 竞速，先成功者胜出。
+  ///
+  /// 动机：部分网络环境下系统 DNS 服务器无响应或极慢（实测未缓存域名
+  /// 解析可达 12s+），直接拖垮聚合搜索；运营商劫持场景下 DoH 也能给出
+  /// 干净结果。任一通道失败/超时都被折叠为"永不完成"，让另一条通道独
+  /// 立胜出；两条通道都失败时由整体 6s 硬上限兜底报错，绝不永久悬挂。
+  /// 系统解析侧的分支超时仅在真实运行环境启用（widget 测试环境下真实
+  /// DNS 查询可能不完成，超时定时器会在 teardown 时以 pending timer 报
+  /// 错），整体硬上限在两种环境下都会生效。
+  Future<List<InternetAddress>> _resolveWithDohRace(String host) async {
+    Future<List<InternetAddress>> never() =>
+        Completer<List<InternetAddress>>().future;
+
+    Future<List<InternetAddress>> foldNever(
+      Future<List<InternetAddress>> future, [
+      Duration? cap,
+    ]) {
+      final capped = cap == null ? future : future.timeout(cap, onTimeout: never);
+      return capped.catchError((Object _) => never());
+    }
+
+    final system = foldNever(
+      _lookup(host),
+      _dnsTimeoutEnabled ? const Duration(seconds: 5) : null,
+    );
+    final doh = foldNever(_dohResolve(host), const Duration(seconds: 4));
+    final addresses = await Future.any([system, doh]).timeout(
+      const Duration(seconds: 6),
+      onTimeout: () => throw const SocketException(
+        'DNS resolution timed out (system resolver and DoH both failed)',
+      ),
+    );
+    if (addresses.isEmpty) {
+      throw const SocketException('DNS resolution produced no addresses');
+    }
+    _storeDns(host, addresses);
+    return addresses;
+  }
+
+  /// AliDNS DoH JSON API（IP 直连，无递归解析问题）。
+  static Future<List<InternetAddress>> _dohResolve(String host) async {
+    final client = _dohClient;
+    if (client == null) throw const SocketException('DoH client disabled');
+    final request = await client.getUrl(
+      Uri.https('223.5.5.5', '/resolve', {'name': host, 'type': '1'}),
+    );
+    final response = await request.close();
+    if (response.statusCode != 200) {
+      throw const SocketException('DoH returned a non-200 status');
+    }
+    final body = await response.transform(utf8.decoder).join();
+    final decoded = jsonDecode(body);
+    final answer = decoded is Map ? decoded['Answer'] : null;
+    if (answer is! List) throw const SocketException('DoH has no answer');
+    final addresses = <InternetAddress>[];
+    for (final entry in answer) {
+      if (entry is Map && entry['type'] == 1 && entry['data'] is String) {
+        final parsed = InternetAddress.tryParse(entry['data'] as String);
+        if (parsed != null) addresses.add(parsed);
+      }
+    }
+    if (addresses.isEmpty) throw const SocketException('DoH has no A record');
+    return addresses;
+  }
+
+  static final HttpClient? _dohClient = _createDohClient();
+
+  static HttpClient _createDohClient() {
+    final client = HttpClient();
+    client.connectionTimeout = const Duration(seconds: 3);
+    client.idleTimeout = const Duration(seconds: 30);
+    return client;
   }
 
   static final bool _dnsTimeoutEnabled = !Platform.environment.containsKey(
@@ -105,7 +182,26 @@ class BookSourceNetworkPolicy {
           ? uri
           : Uri(scheme: 'http', host: targetHost, port: targetPort);
       final addresses = await resolve(targetUri);
-      return Socket.startConnect(addresses.first, targetPort);
+      // IPv4 优先: DNS 常把 AAAA 记录排在前面, 而移动/家用网络普遍
+      // 存在"有 IPv6 地址但路由不通"的情况, 单连接 startConnect 不像
+      // curl 有 Happy Eyeballs 回落, 会一直卡到超时——这是聚合搜索
+      // 大面积超时的根因。IPv6-only 环境仍回退到首个地址。
+      final address = addresses.firstWhere(
+        (candidate) => candidate.type == InternetAddressType.IPv4,
+        orElse: () => addresses.first,
+      );
+      final task = await Socket.startConnect(address, targetPort);
+      // 自定义 connectionFactory 下 HttpClient.connectionTimeout 不会
+      // 生效，黑洞站点会让请求永久挂起。ConnectionTask 是 final 类无法
+      // 包装，这里挂一个看门狗：6s 内未建连成功就 cancel 掉任务，让
+      // task.socket 以错误完成；已建连成功时 cancel 是空操作。
+      final watchdog = Timer(const Duration(seconds: 6), task.cancel);
+      // 派生 future 必须忽略错误: 连接失败时 task.socket 以错误完成,
+      // whenComplete 的返回值若无人消费会在外层 zone 变成 uncaught
+      // error —— 在 dio 拦截器 zone 里会触发 handler 被重复 complete
+      // ("Bad state: The handler has already been called")。
+      task.socket.whenComplete(watchdog.cancel).ignore();
+      return task;
     };
     return client;
   }

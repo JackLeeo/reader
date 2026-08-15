@@ -138,22 +138,27 @@ class LegadoRequestTemplate {
         headers[name] = value;
       }
     }
-    final charset = '${options['charset'] ?? 'utf-8'}'.trim().toLowerCase();
-    if (!_supportedCharsets.contains(charset)) {
+    // 部分书源显式写 "charset": ""，空值与未声明一样回退 utf-8。
+    final charset =
+        '${options['charset'] ?? ''}'.trim().toLowerCase();
+    final effectiveCharset = charset.isEmpty || charset == 'utf-8'
+        ? 'utf-8'
+        : charset;
+    if (!_supportedCharsets.contains(effectiveCharset)) {
       throw BookSourceProtocolException(
-        'Unsupported Legado request charset: $charset.',
+        'Unsupported Legado request charset: $effectiveCharset.',
       );
     }
     if (method == LegadoRequestMethod.post &&
         !headers.keys.any((name) => name.toLowerCase() == 'content-type')) {
       headers['Content-Type'] =
-          'application/x-www-form-urlencoded; charset=$charset';
+          'application/x-www-form-urlencoded; charset=$effectiveCharset';
     }
     return LegadoRequestTemplate(
       url: uri,
       method: method,
       headers: Map.unmodifiable(headers),
-      charset: charset,
+      charset: effectiveCharset,
       body: body as String?,
     );
   }

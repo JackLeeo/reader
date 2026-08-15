@@ -71,6 +71,9 @@ replace_withopacity.ps1
 提取并转换SVG.py
 devtools_options.yaml
 
+# source doctor 本地运行产物（报告/优化书源快照，可随时重新生成）
+tool/reports/
+
 # Copyright application / internal docs
 软著*.md
 需求.md
