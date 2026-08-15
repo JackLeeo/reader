@@ -123,7 +123,17 @@ class LegadoJsEngine {
         'return typeof __out==="object"&&__out!==null?JSON.stringify(__out):String(__out);})()';
   }
 
-  Future<String> _run(String script, int maxHops) async {
+  Future<String> _run(String script, int maxHops) {
+    // 整体预算：复杂脚本 + 多轮网络预取最多 15s，防止死循环或
+    // 慢网络把阅读页永久卡在加载态。
+    return _runUnchecked(script, maxHops).timeout(
+      const Duration(seconds: 15),
+      onTimeout: () =>
+          throw const LegadoJsException('Legado JS evaluation timed out.'),
+    );
+  }
+
+  Future<String> _runUnchecked(String script, int maxHops) async {
     final runtime = _runtime;
     if (runtime == null) {
       throw const LegadoJsException('JS runtime is not available.');

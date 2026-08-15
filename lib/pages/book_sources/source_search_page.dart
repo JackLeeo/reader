@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:xxread/book_sources/models/registered_book_source.dart';
 import 'package:xxread/book_sources/services/book_source_client.dart';
 import 'package:xxread/book_sources/services/book_source_shelf_service.dart';
+import 'package:xxread/book_sources/services/source_concurrency.dart';
 import 'package:xxread/utils/localization_extension.dart';
 import 'package:xxread/utils/page_style_helper.dart';
 
@@ -44,6 +45,10 @@ class SourceSearchPage extends StatefulWidget {
 }
 
 class _SourceSearchPageState extends State<SourceSearchPage> {
+  /// 聚合搜索的并发上限。数百源同时请求会打爆移动设备的
+  /// DNS 解析与连接池，实测会导致大面积超时失败。
+  static const int _searchConcurrency = 16;
+
   final TextEditingController _queryController = TextEditingController();
   final FocusNode _queryFocus = FocusNode();
   final ScrollController _scrollController = ScrollController();
@@ -126,32 +131,50 @@ class _SourceSearchPageState extends State<SourceSearchPage> {
     });
 
     // 每个源完成后立即回报进度，搜索中的 UI 才能展示 N/M 完成。
+    // 并发限制：数百源同时请求会打爆 DNS/连接池，是大面积失败的根因。
+    final limiter = BookSourceConcurrencyLimiter(_searchConcurrency);
     final batches = <_SearchBatch>[];
     final failedNames = <String>[];
     await Future.wait(
-      targetSources.map((source) async {
-        try {
-          final page = await widget.client.search(source, query);
-          batches.add(
-            _SearchBatch(
-              source: source,
-              items: page.items
-                  .map((book) => SourcedBook(source: source, book: book))
-                  .toList(growable: false),
-              page: page.page,
-              hasMore: page.hasMore && page.items.isNotEmpty,
-            ),
-          );
-        } catch (_) {
-          failedNames.add(source.name);
-          batches.add(
-            _SearchBatch(source: source, items: const [], failed: true),
-          );
-        }
-        if (!mounted || generation != _searchGeneration) return;
-        setState(() {
-          _completedSourceCount++;
-          _failedSourceNames = List.unmodifiable(failedNames);
+      targetSources.map((source) {
+        return limiter.run(() async {
+          try {
+            final page = await widget.client.search(source, query);
+            batches.add(
+              _SearchBatch(
+                source: source,
+                items: page.items
+                    .map((book) => SourcedBook(source: source, book: book))
+                    .toList(growable: false),
+                page: page.page,
+                hasMore: page.hasMore && page.items.isNotEmpty,
+              ),
+            );
+          } catch (_) {
+            failedNames.add(source.name);
+            batches.add(
+              _SearchBatch(source: source, items: const [], failed: true),
+            );
+          }
+          if (!mounted || generation != _searchGeneration) return;
+          setState(() {
+            _completedSourceCount++;
+            _failedSourceNames = List.unmodifiable(failedNames);
+            // 流式上屏：成功一批就合并一批结果，用户不必等所有源（含
+            // 死站 12s 超时）全部结束才看到内容。
+            _results = _dedupeAcrossSources(
+              batches.expand((batch) => batch.items),
+            );
+            _pageStates = {
+              for (final batch in batches)
+                if (!batch.failed)
+                  batch.source.id: _SearchPageState(
+                    source: batch.source,
+                    page: batch.page,
+                    hasMore: batch.hasMore,
+                  ),
+            };
+          });
         });
       }),
     );
@@ -208,29 +231,32 @@ class _SourceSearchPageState extends State<SourceSearchPage> {
       _loadMoreFailed = false;
     });
 
+    final limiter = BookSourceConcurrencyLimiter(_searchConcurrency);
     final batches = await Future.wait(
-      targets.map((state) async {
-        try {
-          final page = await widget.client.search(
-            state.source,
-            query,
-            page: state.page + 1,
-          );
-          return _SearchBatch(
-            source: state.source,
-            items: page.items
-                .map((book) => SourcedBook(source: state.source, book: book))
-                .toList(growable: false),
-            page: page.page,
-            hasMore: page.hasMore && page.items.isNotEmpty,
-          );
-        } catch (_) {
-          return _SearchBatch(
-            source: state.source,
-            items: const [],
-            failed: true,
-          );
-        }
+      targets.map((state) {
+        return limiter.run(() async {
+          try {
+            final page = await widget.client.search(
+              state.source,
+              query,
+              page: state.page + 1,
+            );
+            return _SearchBatch(
+              source: state.source,
+              items: page.items
+                  .map((book) => SourcedBook(source: state.source, book: book))
+                  .toList(growable: false),
+              page: page.page,
+              hasMore: page.hasMore && page.items.isNotEmpty,
+            );
+          } catch (_) {
+            return _SearchBatch(
+              source: state.source,
+              items: const [],
+              failed: true,
+            );
+          }
+        });
       }),
     );
 

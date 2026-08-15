@@ -60,6 +60,108 @@ class LegadoRuntime {
     );
   }
 
+  /// 发现页聚合入口：取源的第一个发现分类作为推荐书架。
+  static const int _maxExploreEntriesPerSource = 20;
+
+  Future<BookSourceDiscoveryPage> getDiscovery(
+    RegisteredBookSource registered,
+  ) async {
+    final source = _source(registered);
+    final entries = source.exploreEntries;
+    if (entries.isEmpty) {
+      throw const BookSourceProtocolException(
+        'This source does not support discovery.',
+      );
+    }
+    final entry = entries.first;
+    final page = await _explorePage(source, entry.url);
+    return BookSourceDiscoveryPage(
+      sections: [
+        BookSourceDiscoverySection(
+          id: entry.url,
+          title: entry.title.isEmpty ? source.name : entry.title,
+          items: page.items,
+        ),
+      ],
+    );
+  }
+
+  /// 分类 = 发现入口列表（无需网络请求）。
+  Future<List<BookSourceCategory>> getCategories(
+    RegisteredBookSource registered,
+  ) async {
+    final source = _source(registered);
+    final entries = source.exploreEntries;
+    if (entries.isEmpty) {
+      throw const BookSourceProtocolException(
+        'This source does not support categories.',
+      );
+    }
+    return entries.take(_maxExploreEntriesPerSource).map((entry) {
+      return BookSourceCategory(
+        id: entry.url,
+        name: entry.title.isEmpty ? entry.url : entry.title,
+      );
+    }).toList(growable: false);
+  }
+
+  /// 浏览：按发现入口地址拉取书籍列表。
+  Future<BookSourceSearchPage> browse(
+    RegisteredBookSource registered, {
+    String? category,
+    int page = 1,
+    int pageSize = 20,
+  }) async {
+    final source = _source(registered);
+    final entries = source.exploreEntries;
+    if (entries.isEmpty) {
+      throw const BookSourceProtocolException(
+        'This source does not support browsing.',
+      );
+    }
+    final target = category != null && category.trim().isNotEmpty
+        ? category.trim()
+        : entries.first.url;
+    return _explorePage(source, target, page: page, pageSize: pageSize);
+  }
+
+  Future<BookSourceSearchPage> _explorePage(
+    LegadoBookSource source,
+    String url, {
+    int page = 1,
+    int pageSize = 20,
+  }) async {
+    final report = const LegadoCompatibilityScanner().scan(source);
+    if (!report.canRun) {
+      throw const BookSourceProtocolException(
+        'This compatible source uses features that are not supported yet.',
+      );
+    }
+    final vars = _jsVariables(source, {'page': '$page'});
+    final response = await _request(source, url, variables: {'page': '$page'});
+    final document = LegadoRuleDocument.parse(response.body, response.finalUri);
+    // Legado 发现页规则是 ruleExplore，未声明时回退 ruleSearch。
+    var rule = source.rule('ruleExplore');
+    if (rule.isEmpty) rule = source.rule('ruleSearch');
+    final contexts = await _rules.evaluateList(
+      document,
+      null,
+      _requiredRule(rule, 'bookList'),
+      jsVariables: vars,
+    );
+    final books = <BookSourceBook>[];
+    for (final context in contexts.take(_maxSearchItems)) {
+      final book = await _bookFromRules(document, context, rule, vars: vars);
+      if (book != null) books.add(book);
+    }
+    return BookSourceSearchPage(
+      items: books.take(pageSize).toList(growable: false),
+      page: page,
+      pageSize: pageSize,
+      hasMore: books.length > pageSize,
+    );
+  }
+
   Future<BookSourceBook> getBook(
     RegisteredBookSource registered,
     String bookId,
@@ -367,14 +469,62 @@ class LegadoRuntime {
     );
   }
 
-  /// 展开 URL 模板：内置变量静态替换，剩余 {{}} 表达式走 JS。
+  /// 展开 URL 模板：`@js:`/`<js>` 脚本段与内置变量静态替换，剩余
+  /// `{{}}` 表达式走 JS。JS 引擎不可用时脚本段保持原样，由请求
+  /// 解析器给出可诊断错误（这类源会被导入校验标记为不可运行）。
   Future<String> _expandTemplate(
     String template,
     Map<String, String> variables,
     Uri baseUri,
   ) async {
-    if (!template.contains('{{')) return template;
-    var expanded = template.replaceAllMapped(
+    var working = template.trim();
+    final jsVariables = {
+      'key': variables['key'] ?? '',
+      'page': variables['page'] ?? '',
+      'baseUrl': baseUri.toString(),
+      'host': baseUri.host,
+      'title': variables['title'] ?? '',
+    };
+
+    // `@js:` 前缀：整个地址是一条 JS 语句，求值结果即 URL。
+    if (working.toLowerCase().startsWith('@js:')) {
+      final engine = LegadoJsEngine.instance;
+      if (engine != null) {
+        try {
+          final value = await engine.evaluateExpression(
+            working.substring(4),
+            jsVariables,
+          );
+          if (value.trim().isNotEmpty) working = value.trim();
+        } catch (_) {
+          // 求值失败保持原样，由请求解析器给出可诊断错误。
+        }
+      }
+    } else if (working.contains('<js>')) {
+      // 内联 `<js>...</js>` 段：逐段求值并替换为结果。
+      final engine = LegadoJsEngine.instance;
+      if (engine != null) {
+        for (final match
+            in RegExp(r'<js>([\s\S]*?)</js>')
+                .allMatches(working)
+                .toList()) {
+          try {
+            final value = await engine.evaluateExpression(
+              match.group(1)!,
+              jsVariables,
+            );
+            if (value.isNotEmpty) {
+              working = working.replaceAll(match.group(0)!, value);
+            }
+          } catch (_) {
+            // 单段失败继续处理其余段。
+          }
+        }
+      }
+    }
+
+    if (!working.contains('{{')) return working;
+    var expanded = working.replaceAllMapped(
       RegExp(r'\{\{\s*([^{}]+?)\s*\}\}'),
       (match) {
         final value = variables[match.group(1)!.trim()];
@@ -392,13 +542,10 @@ class LegadoRuntime {
     for (final match in unresolved) {
       final expression = match.group(1)!.trim();
       try {
-        final value = await engine.evaluateExpression(expression, {
-          'key': variables['key'] ?? '',
-          'page': variables['page'] ?? '',
-          'baseUrl': baseUri.toString(),
-          'host': baseUri.host,
-          'title': variables['title'] ?? '',
-        });
+        final value = await engine.evaluateExpression(
+          expression,
+          jsVariables,
+        );
         if (value.isNotEmpty) {
           expanded = expanded.replaceAll(match.group(0)!, value);
         }

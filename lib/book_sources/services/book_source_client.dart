@@ -207,6 +207,10 @@ class BookSourceClient {
   Future<BookSourceDiscoveryPage> getDiscovery(
     RegisteredBookSource source,
   ) async {
+    if (source.sourceProtocol == BookSourceProtocolKind.legado) {
+      await _ensureAdditionalProtocolsEnabled();
+      return _legado.getDiscovery(source);
+    }
     if (!source.capabilities.contains('discover')) {
       throw const BookSourceProtocolException(
         'This source does not support discovery.',
@@ -228,6 +232,10 @@ class BookSourceClient {
   Future<List<BookSourceCategory>> getCategories(
     RegisteredBookSource source,
   ) async {
+    if (source.sourceProtocol == BookSourceProtocolKind.legado) {
+      await _ensureAdditionalProtocolsEnabled();
+      return _legado.getCategories(source);
+    }
     if (!source.capabilities.contains('categories')) {
       throw const BookSourceProtocolException(
         'This source does not support categories.',
@@ -262,6 +270,15 @@ class BookSourceClient {
     int page = 1,
     int pageSize = 20,
   }) async {
+    if (source.sourceProtocol == BookSourceProtocolKind.legado) {
+      await _ensureAdditionalProtocolsEnabled();
+      return _legado.browse(
+        source,
+        category: category,
+        page: page,
+        pageSize: pageSize,
+      );
+    }
     if (!source.capabilities.contains('browse')) {
       throw const BookSourceProtocolException(
         'This source does not support browsing.',

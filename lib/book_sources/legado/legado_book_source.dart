@@ -6,6 +6,14 @@ import '../models/registered_book_source.dart';
 
 enum LegadoCompatibilityLevel { supported, partial, unsupported }
 
+/// 发现页入口：标题 + 展开前的地址模板。
+class LegadoExploreEntry {
+  const LegadoExploreEntry({required this.title, required this.url});
+
+  final String title;
+  final String url;
+}
+
 enum LegadoCompatibilityIssue {
   video,
   login,
@@ -45,11 +53,52 @@ class LegadoBookSource {
   String get comment => _string(raw['bookSourceComment']);
   int get type => _integer(raw['bookSourceType']);
   String get searchUrl => _string(raw['searchUrl']);
+  String get exploreUrl => _string(raw['exploreUrl']);
   bool get enabledCookieJar => raw['enabledCookieJar'] == true;
   int get lastUpdateTime => _integer(raw['lastUpdateTime']);
   int get respondTime => _integer(raw['respondTime']);
 
   Uri get baseUri => Uri.parse(url.split('#').first);
+
+  /// 解析发现页入口。Legado 的 exploreUrl 有两种写法：
+  /// 文本行 `标题::地址`，或 JSON 数组 `[{"title":"..","url":".."}]`。
+  List<LegadoExploreEntry> get exploreEntries {
+    final text = exploreUrl;
+    if (text.isEmpty) return const [];
+    final entries = <LegadoExploreEntry>[];
+    if (text.trim().startsWith('[')) {
+      try {
+        final decoded = jsonDecode(text);
+        if (decoded is List) {
+          for (final item in decoded) {
+            if (item is! Map) continue;
+            final title = _string(item['title']);
+            final url = _string(item['url']);
+            if (url.isNotEmpty) {
+              entries.add(LegadoExploreEntry(title: title, url: url));
+            }
+          }
+        }
+      } on FormatException {
+        return const [];
+      }
+      return entries;
+    }
+    for (final line in text.split(RegExp(r'[\n\r]+'))) {
+      final trimmed = line.trim();
+      if (trimmed.isEmpty) continue;
+      final separator = trimmed.indexOf('::');
+      final title = separator > 0 ? trimmed.substring(0, separator).trim() : '';
+      final url = separator > 0
+          ? trimmed.substring(separator + 2).trim()
+          : trimmed;
+      final cleanedUrl = url.split(RegExp(r'\s*,\s*')).first.trim();
+      if (cleanedUrl.isNotEmpty) {
+        entries.add(LegadoExploreEntry(title: title, url: cleanedUrl));
+      }
+    }
+    return entries;
+  }
 
   String get stableId =>
       'legado.${sha256.convert(utf8.encode(url)).toString().substring(0, 24)}';
@@ -96,6 +145,19 @@ class LegadoBookSource {
   }) {
     final report = const LegadoCompatibilityScanner().scan(this);
     final canEnable = report.canRun && readingChainVerified;
+    // 带 exploreUrl 的源同时开放发现页能力：分类=发现入口列表，
+    // 浏览=按入口地址拉取书籍列表（Legado 的发现走 ruleExplore）。
+    final capabilities = <String>{
+      if (canEnable) 'search',
+      if (canEnable) 'detail',
+      if (canEnable) 'catalog',
+      if (canEnable) 'content',
+      if (canEnable && exploreEntries.isNotEmpty) ...const [
+        'discover',
+        'categories',
+        'browse',
+      ],
+    };
     return RegisteredBookSource(
       id: stableId,
       name: name,
@@ -105,9 +167,7 @@ class LegadoBookSource {
       websiteUrl: baseUri,
       protocolVersion: 'legado-3',
       languages: const [],
-      capabilities: canEnable
-          ? const {'search', 'detail', 'catalog', 'content'}
-          : const {},
+      capabilities: capabilities,
       enabled: enabled && canEnable,
       addedAt: DateTime.now(),
       sourceProtocol: BookSourceProtocolKind.legado,

@@ -227,7 +227,7 @@ class LegadoHttpTransport implements LegadoTransport {
       allowSyntheticDns: true,
     ),
     this.maxResponseBytes = 8 * 1024 * 1024,
-    this.requestTimeout = const Duration(seconds: 8),
+    this.requestTimeout = const Duration(seconds: 12),
   }) : _networkPolicy = networkPolicy,
        _dio = dio ?? _createDio(networkPolicy, requestTimeout);
 
@@ -268,72 +268,112 @@ class LegadoHttpTransport implements LegadoTransport {
           .join('; ');
       final mergedHeaders = Map<String, String>.of(request.headers)
         ..removeWhere((name, _) => name.toLowerCase() == 'cookie');
+      // 默认 User-Agent：大量站点对无 UA 请求返回 403/防爬页面，
+      // 会导致搜索与正文提取静默失败。
+      if (!mergedHeaders.keys.any(
+        (name) => name.toLowerCase() == 'user-agent',
+      )) {
+        mergedHeaders['User-Agent'] = defaultLegadoUserAgent;
+      }
       final cookieHeader = jar.headerFor(current, manualCookie: manualCookie);
       if (cookieHeader.isNotEmpty) mergedHeaders['Cookie'] = cookieHeader;
-      final cancelToken = CancelToken();
+      Response<List<int>>? response;
       try {
-        final response = await _dio.requestUri<List<int>>(
-          current,
-          data: request.method == LegadoRequestMethod.post
-              ? Uint8List.fromList(_encode(request.body ?? '', request.charset))
-              : null,
-          options: Options(
-            method: request.method == LegadoRequestMethod.post ? 'POST' : 'GET',
-            headers: mergedHeaders,
-            responseType: ResponseType.bytes,
-            followRedirects: false,
-            validateStatus: (status) =>
-                status != null && status >= 200 && status < 400,
-          ),
-          cancelToken: cancelToken,
-          onReceiveProgress: (received, total) {
-            if (received > maxResponseBytes || total > maxResponseBytes) {
-              cancelToken.cancel('Response exceeds $maxResponseBytes bytes.');
-            }
-          },
-        );
-        jar.storeFromResponse(
-          current,
-          response.headers.map['set-cookie'] ?? const [],
-        );
-        final status = response.statusCode ?? 0;
-        if (status < 300) {
-          final bytes = response.data ?? const <int>[];
-          if (bytes.length > maxResponseBytes) {
-            throw BookSourceProtocolException(
-              'Legado response exceeds $maxResponseBytes bytes.',
-            );
-          }
-          return LegadoResponse(
-            body: _decode(bytes, request.charset, response.headers),
-            finalUri: current,
-          );
-        }
-        if (redirects == 5) {
-          throw const BookSourceProtocolException(
-            'Legado source redirected too many times.',
-          );
-        }
-        current = BookSourceNetworkPolicy.redirectTarget(
-          current,
-          response.headers.value(HttpHeaders.locationHeader),
-        );
+        response = await _attempt(current, request, mergedHeaders);
       } on DioException catch (error) {
-        if (CancelToken.isCancel(error)) {
+        // 连接类失败重试一次：聚合并发下的偶发连接被拒/超时。
+        if (!_isRetryableConnectionError(error)) {
+          _rethrowRequestException(error);
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+        try {
+          response = await _attempt(current, request, mergedHeaders);
+        } on DioException catch (error) {
+          _rethrowRequestException(error);
+        }
+      }
+      jar.storeFromResponse(
+        current,
+        response.headers.map['set-cookie'] ?? const [],
+      );
+      final status = response.statusCode ?? 0;
+      if (status < 300) {
+        final bytes = response.data ?? const <int>[];
+        if (bytes.length > maxResponseBytes) {
           throw BookSourceProtocolException(
-            error.message ?? 'Legado request was cancelled.',
+            'Legado response exceeds $maxResponseBytes bytes.',
           );
         }
-        throw BookSourceProtocolException(
-          error.response?.statusCode == null
-              ? 'Could not connect to the Legado source.'
-              : 'Legado source returned HTTP ${error.response!.statusCode}.',
+        return LegadoResponse(
+          body: _decode(bytes, request.charset, response.headers),
+          finalUri: current,
         );
       }
+      if (redirects == 5) {
+        throw const BookSourceProtocolException(
+          'Legado source redirected too many times.',
+        );
+      }
+      current = BookSourceNetworkPolicy.redirectTarget(
+        current,
+        response.headers.value(HttpHeaders.locationHeader),
+      );
     }
     throw const BookSourceProtocolException('Legado source request failed.');
   }
+
+  Future<Response<List<int>>> _attempt(
+    Uri target,
+    LegadoRequestTemplate request,
+    Map<String, String> mergedHeaders,
+  ) {
+    final cancelToken = CancelToken();
+    return _dio.requestUri<List<int>>(
+      target,
+      data: request.method == LegadoRequestMethod.post
+          ? Uint8List.fromList(_encode(request.body ?? '', request.charset))
+          : null,
+      options: Options(
+        method: request.method == LegadoRequestMethod.post ? 'POST' : 'GET',
+        headers: mergedHeaders,
+        responseType: ResponseType.bytes,
+        followRedirects: false,
+        validateStatus: (status) =>
+            status != null && status >= 200 && status < 400,
+      ),
+      cancelToken: cancelToken,
+      onReceiveProgress: (received, total) {
+        if (received > maxResponseBytes || total > maxResponseBytes) {
+          cancelToken.cancel('Response exceeds $maxResponseBytes bytes.');
+        }
+      },
+    );
+  }
+
+  static bool _isRetryableConnectionError(DioException error) {
+    if (CancelToken.isCancel(error)) return false;
+    return error.response == null;
+  }
+
+  Never _rethrowRequestException(DioException error) {
+    if (CancelToken.isCancel(error)) {
+      throw BookSourceProtocolException(
+        error.message ?? 'Legado request was cancelled.',
+      );
+    }
+    throw BookSourceProtocolException(
+      error.response?.statusCode == null
+          ? 'Could not connect to the Legado source.'
+          : 'Legado source returned HTTP ${error.response!.statusCode}.',
+    );
+  }
 }
+
+/// Legado 请求的默认 User-Agent。书源未显式声明 UA 时使用；
+/// 无 UA 请求常被目标站点 403 或返回防爬页面。
+const defaultLegadoUserAgent =
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+    '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
 const _supportedCharsets = {'utf-8', 'utf8', 'gbk', 'gb2312', 'gb18030'};
 final _unresolvedVariables = RegExp(r'\{\{[^{}]+\}\}');

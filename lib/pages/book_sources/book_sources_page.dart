@@ -9,6 +9,7 @@ import 'package:xxread/book_sources/protocol/book_source_protocol.dart';
 import 'package:xxread/book_sources/services/book_source_client.dart';
 import 'package:xxread/book_sources/services/book_source_registry.dart';
 import 'package:xxread/book_sources/services/book_source_shelf_service.dart';
+import 'package:xxread/book_sources/services/source_concurrency.dart';
 import 'package:xxread/pages/home/home_mobile_chrome.dart';
 import 'package:xxread/pages/home/home_shell_page.dart';
 import 'package:xxread/utils/localization_extension.dart';
@@ -80,6 +81,10 @@ class BookSourcesPage extends StatefulWidget {
 }
 
 class _BookSourcesPageState extends State<BookSourcesPage> {
+  /// 发现页聚合拉取的并发上限：数百源同时请求会打爆
+  /// 移动设备的 DNS 解析与连接池，导致大面积超时失败。
+  static const int _fetchConcurrency = 12;
+
   final BookSourceRegistry _registry = BookSourceRegistry();
   late final BookSourceClient _client;
   late final BookSourceShelfService _shelfService = BookSourceShelfService(
@@ -99,6 +104,8 @@ class _BookSourcesPageState extends State<BookSourcesPage> {
 
   // 每个 Tab 的内容独立缓存，切换回来不再重新请求。
   final Map<_DiscoverSection, _SectionCache> _cache = {};
+  // 每个 Tab 的加载代际，用于丢弃过期轮次的流式局部更新。
+  final Map<_DiscoverSection, int> _sectionRuns = {};
   _SourcedCategory? _selectedCategory;
   List<SourcedBook> _categoryBooks = const [];
   bool _loadingCategoryBooks = false;
@@ -158,32 +165,48 @@ class _BookSourcesPageState extends State<BookSourcesPage> {
     bool force = false,
   }) async {
     if (!force && _cache[section] != null) return;
+    // 代际 guard：下拉刷新会重跑本方法，旧一轮的流式回调不得污染新一轮。
+    final run = (_sectionRuns[section] ?? 0) + 1;
+    _sectionRuns[section] = run;
     setState(() => _cache[section] = const _SectionCache.loading());
+    void publishPartial(_SectionCache? partial) {
+      if (!mounted || run != _sectionRuns[section] || partial == null) return;
+      setState(() => _cache[section] = partial);
+    }
+
     _SectionCache next;
     try {
       next = switch (section) {
         _DiscoverSection.recommended => _SectionCache.shelves(
-          await _fetchShelves(),
+          await _fetchShelves(
+            onPartial: (shelves) =>
+                publishPartial(_SectionCache.shelves(shelves)),
+          ),
         ),
         _DiscoverSection.categories => _SectionCache.categories(
           await _fetchCategories(),
         ),
-        _DiscoverSection.latest => _SectionCache.books(await _fetchLatest()),
+        _DiscoverSection.latest => _SectionCache.books(
+          await _fetchLatest(
+            onPartial: (books) => publishPartial(_SectionCache.books(books)),
+          ),
+        ),
       };
     } catch (error) {
       next = _SectionCache.error(error.toString());
     }
-    if (!mounted) return;
+    if (!mounted || run != _sectionRuns[section]) return;
     setState(() => _cache[section] = next);
     if (section == _DiscoverSection.categories) {
       _autoSelectFirstCategory();
     }
   }
 
-  Future<List<_DiscoveryShelf>> _fetchShelves() async {
-    final batches = await _fetchSourceBatches(_targets('discover'), (
-      source,
-    ) async {
+  Future<List<_DiscoveryShelf>> _fetchShelves({
+    void Function(List<_DiscoveryShelf> shelves)? onPartial,
+  }) async {
+    final shelves = <_DiscoveryShelf>[];
+    await _fetchSourceBatches(_targets('discover'), (source) async {
       final page = await _client.getDiscovery(source);
       return page.sections
           .where((section) => section.items.isNotEmpty)
@@ -195,8 +218,12 @@ class _BookSourcesPageState extends State<BookSourcesPage> {
             ),
           )
           .toList(growable: false);
+    }, onBatch: (batch) {
+      if (batch.isEmpty) return;
+      shelves.addAll(batch);
+      onPartial?.call(List.unmodifiable(shelves));
     });
-    return batches.expand((items) => items).toList(growable: false);
+    return shelves;
   }
 
   Future<List<_SourcedCategory>> _fetchCategories() async {
@@ -217,29 +244,43 @@ class _BookSourcesPageState extends State<BookSourcesPage> {
     return batches.expand((items) => items).toList(growable: false);
   }
 
-  Future<List<SourcedBook>> _fetchLatest() async {
-    final batches = await _fetchSourceBatches(_targets('browse'), (
-      source,
-    ) async {
+  Future<List<SourcedBook>> _fetchLatest({
+    void Function(List<SourcedBook> books)? onPartial,
+  }) async {
+    final batches = <List<SourcedBook>>[];
+    await _fetchSourceBatches(_targets('browse'), (source) async {
       final page = await _client.browse(source, sort: 'latest');
       return page.items
           .map((book) => SourcedBook(source: source, book: book))
           .toList(growable: false);
+    }, onBatch: (batch) {
+      if (batch.isEmpty) return;
+      batches.add(batch);
+      onPartial?.call(BookSourcesPage.interleaveLatestBatches(batches));
     });
     return BookSourcesPage.interleaveLatestBatches(batches);
   }
 
   Future<List<List<T>>> _fetchSourceBatches<T>(
     List<RegisteredBookSource> sources,
-    Future<List<T>> Function(RegisteredBookSource source) fetch,
-  ) async {
+    Future<List<T>> Function(RegisteredBookSource source) fetch, {
+    void Function(List<T> batch)? onBatch,
+  }) async {
+    // 并发限制：数百源同时请求会打爆 DNS/连接池，导致大面积超时。
+    final limiter = BookSourceConcurrencyLimiter(_fetchConcurrency);
     final results = await Future.wait(
-      sources.map((source) async {
-        try {
-          return _SourceFetchResult<T>.success(source, await fetch(source));
-        } catch (error) {
-          return _SourceFetchResult<T>.failure(source, error);
-        }
+      sources.map((source) {
+        return limiter.run(() async {
+          _SourceFetchResult<T> result;
+          try {
+            result = _SourceFetchResult<T>.success(source, await fetch(source));
+          } catch (error) {
+            result = _SourceFetchResult<T>.failure(source, error);
+          }
+          // 成功一批回调一批，发现页可以边加载边上屏，不必等死站超时。
+          if (result.error == null) onBatch?.call(result.items);
+          return result;
+        });
       }),
     );
     final batches = results

@@ -123,9 +123,11 @@ class RegisteredBookSource {
       languages: (json['languages'] as List? ?? const [])
           .whereType<String>()
           .toList(growable: false),
-      capabilities: (json['capabilities'] as List? ?? const [])
-          .whereType<String>()
-          .toSet(),
+      capabilities: _storedCapabilities(
+        json,
+        sourceProtocol: sourceProtocol,
+        sourceConfig: sourceConfig,
+      ),
       maxCatalogPageSize: maxCatalogPageSize,
       enabled: json['enabled'] as bool? ?? true,
       addedAt:
@@ -180,6 +182,30 @@ class RegisteredBookSource {
       sourceConfig: sourceConfig,
     );
   }
+}
+
+/// 读取存量书源能力，并为带 exploreUrl 的 Legado 源动态补齐发现页能力。
+///
+/// 旧版本导入的书源 capabilities 里没有 discover/categories/browse，
+/// 这里在反序列化时按 sourceConfig 合并，避免发现页三个板块空白。
+Set<String> _storedCapabilities(
+  Map<String, dynamic> json, {
+  required BookSourceProtocolKind sourceProtocol,
+  Map<String, dynamic>? sourceConfig,
+}) {
+  final capabilities = (json['capabilities'] as List? ?? const [])
+      .whereType<String>()
+      .toSet();
+  if (sourceProtocol != BookSourceProtocolKind.legado ||
+      sourceConfig == null ||
+      !capabilities.contains('search')) {
+    return capabilities;
+  }
+  final exploreUrl = sourceConfig['exploreUrl'];
+  if (exploreUrl is String && exploreUrl.trim().isNotEmpty) {
+    capabilities.addAll(const ['discover', 'categories', 'browse']);
+  }
+  return capabilities;
 }
 
 String _requiredStoredString(Map<String, dynamic> json, String key) {

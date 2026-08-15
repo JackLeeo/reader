@@ -16,6 +16,16 @@ class BookSourceNetworkPolicy {
   final bool allowPrivateNetwork;
   final bool allowSyntheticDns;
 
+  /// 库级 DNS 缓存与去重：每次请求 resolve 至少触发一次 lookup，而
+  /// 聚合搜索/发现页会对上百个源并发校验+建连，同一 host 会被解析
+  /// 多次并大量占用系统 DNS，是大面积超时的主因之一。缓存为库级
+  /// 静态：const 策略实例间共享；仅默认 lookup 才启用，测试注入的
+  /// 自定义 lookup 不经过缓存，避免相互污染。
+  static const Duration _dnsCacheTtl = Duration(minutes: 5);
+  static const int _dnsCacheMaxEntries = 512;
+  static final Map<String, _DnsCacheEntry> _dnsCache = {};
+  static final Map<String, Future<List<InternetAddress>>> _dnsInFlight = {};
+
   Future<void> validate(Uri uri) async {
     await resolve(uri);
   }
@@ -27,7 +37,9 @@ class BookSourceNetworkPolicy {
       );
     }
     final literal = InternetAddress.tryParse(uri.host);
-    final addresses = literal == null ? await _lookup(uri.host) : [literal];
+    final addresses = literal == null
+        ? await _resolveHost(uri.host)
+        : [literal];
     if (addresses.isEmpty ||
         addresses.any(
           (address) =>
@@ -43,6 +55,45 @@ class BookSourceNetworkPolicy {
       );
     }
     return addresses;
+  }
+
+  Future<List<InternetAddress>> _resolveHost(String host) {
+    // 自定义 lookup（测试注入）不走共享缓存。
+    if (_lookup != InternetAddress.lookup) return _lookup(host);
+    final cached = _dnsCache[host];
+    if (cached != null) {
+      if (cached.expiresAt.isAfter(DateTime.now())) {
+        return Future.value(cached.addresses);
+      }
+      _dnsCache.remove(host);
+    }
+    final inFlight = _dnsInFlight[host];
+    if (inFlight != null) return inFlight;
+    // 系统 DNS 解析器在无响应时会长时间内部重试，这里强制 5s 超时，
+    // 避免聚合搜索时单个域名拖垮整体进度。widget 测试环境下真实 DNS
+    // 查询不会完成，超时定时器会在 teardown 时以 pending timer 报错，
+    // 因此仅在真实运行时启用该上限。
+    final lookup = _dnsTimeoutEnabled
+        ? _lookup(host).timeout(const Duration(seconds: 5))
+        : _lookup(host);
+    final future = lookup.then((addresses) {
+      if (addresses.isNotEmpty) _storeDns(host, addresses);
+      return addresses;
+    }).whenComplete(() => _dnsInFlight.remove(host));
+    _dnsInFlight[host] = future;
+    return future;
+  }
+
+  static final bool _dnsTimeoutEnabled = !Platform.environment.containsKey(
+    'FLUTTER_TEST',
+  );
+
+  static void _storeDns(String host, List<InternetAddress> addresses) {
+    if (_dnsCache.length >= _dnsCacheMaxEntries) _dnsCache.clear();
+    _dnsCache[host] = _DnsCacheEntry(
+      addresses: List.unmodifiable(addresses),
+      expiresAt: DateTime.now().add(_dnsCacheTtl),
+    );
   }
 
   HttpClient createPinnedHttpClient() {
@@ -139,4 +190,11 @@ class BookSourceNetworkPolicy {
     }
     return target;
   }
+}
+
+class _DnsCacheEntry {
+  const _DnsCacheEntry({required this.addresses, required this.expiresAt});
+
+  final List<InternetAddress> addresses;
+  final DateTime expiresAt;
 }
