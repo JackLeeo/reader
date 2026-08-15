@@ -8,6 +8,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
+import 'package:path/path.dart' as path;
+import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart' as provider;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -16,11 +18,14 @@ import 'l10n/app_localizations.dart';
 import 'book_sources/services/book_source_client.dart';
 import 'book_sources/services/builtin_book_source_preloader.dart';
 import 'book_sources/services/book_source_shelf_service.dart';
+import 'core/reader/native_reader_service.dart';
 import 'models/book.dart';
 import 'pages/home/home_shell_page.dart';
 import 'pages/legal/user_agreement_page.dart';
+import 'pages/library/import_book/import_book_page.dart';
 import 'pages/reader/book_source_reader_page.dart';
 import 'services/books/book_services.dart';
+import 'services/books/book_format_support.dart';
 import 'services/reading/reading_resume_service.dart';
 import 'services/core/background_download_notifier.dart';
 import 'services/core/core_services.dart';
@@ -37,7 +42,7 @@ import 'utils/ui_style.dart';
 import 'widgets/app_brand_icon.dart';
 import 'widgets/side_toast.dart';
 
-void main() async {
+void main(List<String> arguments) async {
   // 确保可以在 runApp 前安全调用 SystemChrome
   WidgetsFlutterBinding.ensureInitialized();
 
@@ -104,10 +109,37 @@ void main() async {
             create: (_) => WebDavSyncController(),
           ),
         ],
-        child: XxReadApp(),
+        child: XxReadApp(
+          initialFilePaths: _supportedDesktopFileArguments(arguments),
+        ),
       ),
     ),
   );
+}
+
+List<String> _supportedDesktopFileArguments(List<String> arguments) {
+  if (kIsWeb || Platform.isAndroid || Platform.isIOS) return const [];
+  final paths = <String>[];
+  for (final argument in arguments) {
+    var candidate = argument;
+    final uri = Uri.tryParse(argument);
+    if (uri != null && uri.scheme == 'file') {
+      try {
+        candidate = uri.toFilePath();
+      } catch (_) {
+        continue;
+      }
+    }
+    final file = File(candidate);
+    if (!file.existsSync()) continue;
+    final extension = BookFormatRegistry.normalizeExtension(
+      path.extension(candidate),
+    );
+    if (BookFormatRegistry.pickerExtensions.contains(extension)) {
+      paths.add(file.absolute.path);
+    }
+  }
+  return List<String>.unmodifiable(paths.toSet());
 }
 
 class RestartableApp extends StatefulWidget {
@@ -297,7 +329,9 @@ class ThemeNotifier extends ChangeNotifier {
 }
 
 class XxReadApp extends StatefulWidget {
-  const XxReadApp({super.key});
+  const XxReadApp({super.key, this.initialFilePaths = const []});
+
+  final List<String> initialFilePaths;
 
   @override
   State<XxReadApp> createState() => _XxReadAppState();
@@ -312,11 +346,29 @@ class _XxReadAppState extends State<XxReadApp> with WidgetsBindingObserver {
   BackgroundDownloadTap? _pendingNotificationTap;
   bool _webDavSyncInitialized = false;
   bool _resumeReadingHandled = false;
+  late final IncomingBookService _incomingBookService;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _incomingBookService = IncomingBookService(
+      bridge: IncomingBookPlatformBridge(),
+      materializer: IncomingBookMaterializer(),
+      importer: BookImportService(),
+      openBook: _openIncomingBook,
+      openImportQueue: _openIncomingImportQueue,
+      onFailure: _showIncomingBookFailure,
+      onProcessing: (processing) {
+        if (processing) _showIncomingBookProcessing();
+      },
+    );
+    unawaited(
+      _incomingBookService.start().catchError((Object error) {
+        debugPrint('入站书籍通道初始化失败: $error');
+      }),
+    );
+    _enqueueInitialDesktopBooks();
     _notificationTapSubscription = BackgroundDownloadNotifier.taps.listen(
       _handleNotificationTap,
     );
@@ -329,7 +381,98 @@ class _XxReadAppState extends State<XxReadApp> with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _notificationTapSubscription?.cancel();
+    unawaited(_incomingBookService.dispose());
     super.dispose();
+  }
+
+  void _enqueueInitialDesktopBooks() {
+    if (widget.initialFilePaths.isEmpty) return;
+    final requestId =
+        'desktop:${DateTime.now().microsecondsSinceEpoch.toRadixString(16)}';
+    _incomingBookService.addRequest(
+      IncomingBookRequest(
+        requestId: requestId,
+        action: IncomingBookAction.open,
+        items: [
+          for (var index = 0; index < widget.initialFilePaths.length; index++)
+            IncomingBookItem(
+              id: '$requestId:$index',
+              displayName: path.basename(widget.initialFilePaths[index]),
+              localPath: widget.initialFilePaths[index],
+            ),
+        ],
+      ),
+    );
+  }
+
+  void _syncIncomingBookReadiness() {
+    final ready = _isBootstrapped && _hasAcceptedAgreement == true;
+    if (!ready) {
+      unawaited(_incomingBookService.setReady(false));
+      return;
+    }
+    if (_navigatorKey.currentContext != null) {
+      unawaited(_incomingBookService.setReady(true));
+      return;
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _syncIncomingBookReadiness();
+    });
+  }
+
+  Future<void> _openIncomingBook(Book book) async {
+    // 外部打开文件是显式意图，本次启动不再自动恢复上次阅读。
+    _resumeReadingHandled = true;
+    final context = _navigatorKey.currentContext;
+    if (!mounted || context == null) {
+      throw StateError('Navigator is not ready for an incoming book');
+    }
+    // Wait for repair and successful route insertion, but do not hold the
+    // incoming-request FIFO until the reader is closed.
+    await NativeReaderService.openBook(
+      context,
+      book,
+      waitForReaderClose: false,
+    );
+  }
+
+  Future<void> _openIncomingImportQueue(List<BookImportSource> sources) async {
+    _resumeReadingHandled = true;
+    final context = _navigatorKey.currentContext;
+    if (!mounted || context == null) {
+      throw StateError('Navigator is not ready for incoming books');
+    }
+    await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => ImportBookPage(initialSources: sources),
+      ),
+    );
+  }
+
+  void _showIncomingBookProcessing() {
+    final context = _navigatorKey.currentContext;
+    if (context != null) {
+      showSideToast(context, context.l10n.incomingBooksImporting);
+    }
+  }
+
+  void _showIncomingBookFailure(IncomingBookFailure failure) {
+    final context = _navigatorKey.currentContext;
+    if (context == null) {
+      debugPrint('入站书籍失败: ${failure.code}');
+      return;
+    }
+    final message = switch (failure.code) {
+      'no_book_file' => context.l10n.incomingBooksNoBookFile,
+      'permission_expired' => context.l10n.incomingBooksPermissionExpired,
+      'unsupported_format' => context.l10n.incomingBooksUnsupportedFormat,
+      'file_too_large' => context.l10n.incomingBooksFileTooLarge,
+      'too_many_files' => context.l10n.incomingBooksTooManyFiles,
+      'content_mismatch' => context.l10n.incomingBooksContentMismatch,
+      'partial_failure' => context.l10n.incomingBooksSomeFilesSkipped,
+      _ => context.l10n.incomingBooksImportFailed,
+    };
+    showSideToast(context, message, kind: SideToastKind.error);
   }
 
   @override
@@ -363,6 +506,7 @@ class _XxReadAppState extends State<XxReadApp> with WidgetsBindingObserver {
       _isBootstrapped = false;
       _bootstrapError = null;
     });
+    _syncIncomingBookReadiness();
 
     // 初始化缓存与应用状态服务
     try {
@@ -374,6 +518,33 @@ class _XxReadAppState extends State<XxReadApp> with WidgetsBindingObserver {
         setState(() => _bootstrapError = _BootstrapError.dataService);
       }
       return;
+    }
+
+    // 浏览器没有 path_provider 的文件系统目录。Web 端的图片与书籍
+    // 持久化需要单独的浏览器存储实现，不应让本地文件系统的初始化
+    // 阻塞整个 Web 应用启动。
+    if (!kIsWeb) {
+      // 初始化图片管理器
+      try {
+        final appDocDir = await getApplicationDocumentsDirectory();
+        await BookImageManager().initialize(appDocDir.path);
+      } catch (e) {
+        debugPrint('图片管理器初始化失败: $e');
+        if (mounted) {
+          setState(() => _bootstrapError = _BootstrapError.imageManager);
+        }
+        return;
+      }
+
+      // 修复历史绝对路径（升级/重装后可能导致书籍与封面路径失效）
+      try {
+        await BookStorageRepairService().repairAllBooksIfNeeded();
+        // 清理历史残留的临时/无效文件，避免占用存储
+        await BookStorageRepairService().cleanupUnusedStorageArtifacts();
+      } catch (e) {
+        // 路径修复失败不阻塞启动
+        debugPrint('书籍路径修复失败（已忽略，不阻塞启动）: $e');
+      }
     }
 
     if (!mounted) return;
@@ -398,6 +569,7 @@ class _XxReadAppState extends State<XxReadApp> with WidgetsBindingObserver {
       _isBootstrapped = true;
       _bootstrapError = null;
     });
+    _syncIncomingBookReadiness();
     unawaited(_openPendingNotificationTap());
     _scheduleResumeLastReading();
   }
@@ -409,6 +581,7 @@ class _XxReadAppState extends State<XxReadApp> with WidgetsBindingObserver {
     setState(() {
       _hasAcceptedAgreement = hasAccepted;
     });
+    _syncIncomingBookReadiness();
     unawaited(_openPendingNotificationTap());
     _scheduleResumeLastReading();
     debugPrint('📋 协议状态检查: ${hasAccepted ? "已同意" : "未同意"}');
@@ -419,6 +592,7 @@ class _XxReadAppState extends State<XxReadApp> with WidgetsBindingObserver {
     setState(() {
       _hasAcceptedAgreement = true;
     });
+    _syncIncomingBookReadiness();
     unawaited(_openPendingNotificationTap());
     _scheduleResumeLastReading();
     debugPrint('✅ 用户协议已同意，进入主应用');
@@ -461,7 +635,7 @@ class _XxReadAppState extends State<XxReadApp> with WidgetsBindingObserver {
       );
       await BookOpenTransition.push<void>(_navigatorKey.currentContext!, route);
     } else {
-      showSideToast(_navigatorKey.currentContext!, '本地书籍功能已移除');
+      await NativeReaderService.openBook(_navigatorKey.currentContext!, book);
     }
   }
 
@@ -472,6 +646,8 @@ class _XxReadAppState extends State<XxReadApp> with WidgetsBindingObserver {
   void _scheduleResumeLastReading() {
     if (!_isBootstrapped || _hasAcceptedAgreement != true) return;
     if (_resumeReadingHandled) return;
+    // 桌面端带文件参数启动时，交给入站书籍通道打开目标文件。
+    if (widget.initialFilePaths.isNotEmpty) return;
     if (_navigatorKey.currentContext == null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) _scheduleResumeLastReading();
@@ -505,7 +681,7 @@ class _XxReadAppState extends State<XxReadApp> with WidgetsBindingObserver {
         );
         await BookOpenTransition.push<void>(context, route);
       } else {
-        showSideToast(context, '本地书籍功能已移除');
+        await NativeReaderService.openBook(context, book);
       }
     } catch (error) {
       // 自动恢复失败不打扰用户，停留首页即可。
@@ -624,6 +800,8 @@ class _XxReadAppState extends State<XxReadApp> with WidgetsBindingObserver {
                 switch (_bootstrapError) {
                   _BootstrapError.dataService =>
                     context.l10n.bootstrapDataServiceFailed,
+                  _BootstrapError.imageManager =>
+                    context.l10n.bootstrapImageManagerFailed,
                   null => context.l10n.unknownError,
                 },
                 textAlign: TextAlign.center,
@@ -780,4 +958,4 @@ class _XxReadAppState extends State<XxReadApp> with WidgetsBindingObserver {
 }
 
 /// 启动初始化失败的类型，文案在 build 时按当前语言解析。
-enum _BootstrapError { dataService }
+enum _BootstrapError { dataService, imageManager }

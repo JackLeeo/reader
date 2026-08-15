@@ -9,6 +9,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show ScrollCacheExtent;
 import 'package:xxread/book_sources/services/book_source_client.dart';
 import 'package:xxread/book_sources/services/book_source_shelf_service.dart';
+import 'package:xxread/core/reader/native_reader_service.dart';
 import 'package:xxread/models/book.dart';
 import 'package:xxread/pages/reader/book_source_reader_page.dart';
 import 'package:xxread/pages/reading_stats/detailed_stats_page.dart';
@@ -336,9 +337,11 @@ class _HomeMobileDashboardPageState extends State<HomeMobileDashboardPage>
           }
         }
       } else {
-        if (mounted) {
-          showSideToast(context, '本地书籍功能已移除');
-        }
+        await NativeReaderService.openBook(
+          context,
+          fullBook,
+          origin: ReaderPageTransitionOrigin.home,
+        );
       }
       if (mounted) await _loadAllStats();
     } finally {

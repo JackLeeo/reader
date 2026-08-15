@@ -10,6 +10,7 @@ import 'sync_change_store.dart';
 import 'sync_dataset_catalog.dart';
 import 'sync_engine.dart';
 import 'sync_models.dart';
+import 'webdav_book_file_service.dart';
 import 'webdav_client.dart';
 
 class WebDavSyncController extends ChangeNotifier {
@@ -18,15 +19,20 @@ class WebDavSyncController extends ChangeNotifier {
     SyncChangeStore? changeStore,
     SyncEngine? engine,
     WebDavClientFactory? clientFactory,
+    WebDavBookFileService? bookFileService,
   }) : _configStore = configStore ?? SecureSyncConfigStore(),
        _changeStore = changeStore ?? SyncChangeStore(),
        _clientFactory = clientFactory ?? WebDavClient.standard,
-       _engine = engine;
+       _engine = engine {
+    _bookFileService =
+        bookFileService ?? WebDavBookFileService(configStore: _configStore);
+  }
 
   final SecureSyncConfigStore _configStore;
   final SyncChangeStore _changeStore;
   final WebDavClientFactory _clientFactory;
   SyncEngine? _engine;
+  late final WebDavBookFileService _bookFileService;
   Future<WebDavSyncRunResult>? _running;
   WebDavSyncConfiguration? _configuration;
   WebDavSyncScope _scope = const WebDavSyncScope();
@@ -41,6 +47,9 @@ class WebDavSyncController extends ChangeNotifier {
   List<RemoteBookDescriptor> _remoteBooks = const [];
   WebDavNewBookUploadPolicy _newBookUploadPolicy =
       WebDavNewBookUploadPolicy.askEveryTime;
+  final List<Book> _backgroundUploadQueue = <Book>[];
+  final Set<String> _backgroundUploadTitles = <String>{};
+  bool _backgroundUploadRunning = false;
 
   bool get isConfigured => _configuration != null;
   WebDavSyncStatus get status => _status;
@@ -58,6 +67,32 @@ class WebDavSyncController extends ChangeNotifier {
   WebDavSyncRunResult? get lastResult => _lastResult;
   List<RemoteBookDescriptor> get remoteBooks => _remoteBooks;
   WebDavNewBookUploadPolicy get newBookUploadPolicy => _newBookUploadPolicy;
+  SyncFileCapabilities get fileCapabilities => const SyncFileCapabilities();
+
+  /// Queues automatic uploads without making the caller wait for network I/O.
+  /// Existing remote titles and titles already queued in this app session are
+  /// skipped before any transfer starts.
+  int enqueueNewBookUploads(Iterable<Book> books) {
+    if (!isConfigured || !scope.bookFiles) return 0;
+    final remoteTitles = remoteBooks
+        .map((book) => _normalizedBookTitle(book.title))
+        .where((title) => title.isNotEmpty)
+        .toSet();
+    var queued = 0;
+    for (final book in books) {
+      if (book.isOnline || book.filePath.isEmpty) continue;
+      final title = _normalizedBookTitle(book.title);
+      if (title.isEmpty ||
+          remoteTitles.contains(title) ||
+          !_backgroundUploadTitles.add(title)) {
+        continue;
+      }
+      _backgroundUploadQueue.add(book);
+      queued++;
+    }
+    if (queued > 0) unawaited(_drainBackgroundBookUploads());
+    return queued;
+  }
 
   Future<void> initialize() async {
     _configuration = await _configStore.readConfiguration();

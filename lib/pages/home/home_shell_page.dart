@@ -13,9 +13,11 @@ import 'package:xxread/book_sources/services/book_source_registry.dart';
 import 'package:xxread/book_sources/services/book_source_shelf_service.dart';
 import 'package:xxread/l10n/app_localizations.dart';
 import 'package:xxread/models/home_navigation_destination.dart';
+import 'package:xxread/pages/ai/ai_page.dart';
 import 'package:xxread/pages/book_sources/book_source_management_page.dart';
 import 'package:xxread/pages/book_sources/book_sources_page.dart';
 import 'package:xxread/pages/book_sources/source_search_page.dart';
+import 'package:xxread/pages/library/import_book/import_book_page.dart';
 import 'package:xxread/pages/library/library_page.dart';
 import 'package:xxread/pages/library/download_tasks_page.dart';
 import 'package:xxread/pages/settings/settings_page.dart';
@@ -98,6 +100,7 @@ class _HomeShellPageState extends State<HomeShellPage> {
   final HomeDashboardController _homeDashboardController =
       HomeDashboardController();
   final SettingsPageController _settingsController = SettingsPageController();
+  final AiPageController _aiPageController = AiPageController();
   AppLocalizations? _l10n;
   final LibraryPageController _libraryController = LibraryPageController();
 
@@ -165,6 +168,13 @@ class _HomeShellPageState extends State<HomeShellPage> {
         selectedIcon: Icons.explore_rounded,
         label: l10n.discover,
         page: const BookSourcesPage(),
+      ),
+      HomeNavigationDestination.ai: HomeNavigationItem(
+        destination: HomeNavigationDestination.ai,
+        icon: Icons.auto_awesome_outlined,
+        selectedIcon: Icons.auto_awesome,
+        label: l10n.navAi,
+        page: AiPage(controller: _aiPageController),
       ),
       HomeNavigationDestination.settings: HomeNavigationItem(
         destination: HomeNavigationDestination.settings,

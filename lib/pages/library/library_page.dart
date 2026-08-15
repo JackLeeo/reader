@@ -13,14 +13,20 @@ import 'package:flutter/rendering.dart' show ScrollCacheExtent;
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:xxread/book_sources/services/book_source_shelf_service.dart';
+import 'package:xxread/core/reader/native_reader_service.dart';
 import 'package:xxread/models/book.dart';
 import 'package:xxread/pages/home/home_mobile_chrome.dart';
 import 'package:xxread/pages/home/home_shell_page.dart';
 import 'package:xxread/pages/reader/book_source_reader_page.dart';
+import 'package:xxread/pages/settings/sync/book_file_sync_page.dart';
+import 'package:xxread/reader_core/ai/ai_service.dart';
+import 'package:xxread/services/ai/ai_preprocess_task_controller.dart';
 import 'package:xxread/services/books/book_services.dart';
+import 'package:xxread/services/books/book_text_extraction_service.dart';
 import 'package:xxread/services/core/app_settings_service.dart';
 import 'package:xxread/services/library/library_services.dart';
 import 'package:xxread/services/library/download_task_controller.dart';
+import 'package:xxread/services/sync/webdav_sync_controller.dart';
 import 'package:xxread/utils/book_open_transition.dart';
 import 'package:xxread/utils/glass_config.dart';
 import 'package:xxread/utils/layout_helper.dart';
@@ -36,6 +42,7 @@ import 'package:xxread/widgets/scrolling_text.dart';
 import 'package:xxread/widgets/side_toast.dart';
 import 'package:xxread/widgets/source_cover_image.dart';
 
+import 'import_book/import_book_page.dart';
 import 'download_tasks_page.dart';
 import 'library_grid_book_details.dart';
 import 'library_selection_model.dart';
@@ -116,6 +123,7 @@ class _LibraryPageState extends State<LibraryPage> {
   bool _searchBarVisible = false;
   _LibraryFilter _selectedFilter = _LibraryFilter.all;
   final LibrarySelectionModel _selection = LibrarySelectionModel();
+  final Set<String> _exportingBookPaths = <String>{};
 
   /// 经典封面展开需要在点击和返回时定位书库里的原封面。
   final Map<int, GlobalKey> _coverKeys = <int, GlobalKey>{};
@@ -168,9 +176,12 @@ class _LibraryPageState extends State<LibraryPage> {
           }
         }
       } else {
-        if (mounted) {
-          showSideToast(context, '本地书籍功能已移除');
-        }
+        await NativeReaderService.openBook(
+          context,
+          fullBook,
+          animation: animation,
+          libraryAnimation: animation == null ? libraryAnimation : null,
+        );
       }
       if (mounted) _loadBooks();
     } finally {
@@ -472,6 +483,11 @@ class _LibraryPageState extends State<LibraryPage> {
           ),
         ),
         body: _buildContent(context, useRailNavigation: useRailNavigation),
+        // 手机端改为顶部“+”按钮入口，宽屏继续保留FAB
+        floatingActionButton:
+            LayoutHelper.getNavigationType(context) == NavigationType.rail
+            ? _buildFloatingActionButton()
+            : null,
       ),
     );
   }
@@ -582,6 +598,7 @@ class _LibraryPageState extends State<LibraryPage> {
   Widget _buildTopBar() {
     final palette = PageStyleHelper.palette(context);
     final scheme = Theme.of(context).colorScheme;
+    final webDavSync = context.watch<WebDavSyncController?>();
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
       child: Row(
@@ -617,6 +634,21 @@ class _LibraryPageState extends State<LibraryPage> {
               child: Text(context.l10n.librarySelectAll),
             )
           else ...[
+            if (webDavSync?.isConfigured ?? false) ...[
+              _buildTopBarIcon(
+                icon: Icons.cloud_sync_rounded,
+                active: webDavSync!.remoteBooks.any(
+                  (book) => book.fileAvailable,
+                ),
+                tooltip: context.l10n.webDavBookFilesTitle,
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => const BookFileSyncPage(),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+            ],
             _buildTopBarIcon(
               icon: Icons.downloading_rounded,
               active:
@@ -652,6 +684,33 @@ class _LibraryPageState extends State<LibraryPage> {
                   ? scheme.onPrimaryContainer
                   : palette.iconMuted,
               onTapWithRect: _showFilterMenu,
+            ),
+            const SizedBox(width: 8),
+            InkWell(
+              borderRadius: BorderRadius.circular(22),
+              onTap: () async {
+                final result = await Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => const ImportBookPage(),
+                  ),
+                );
+                if (result == true && mounted) {
+                  _loadBooks();
+                }
+              },
+              child: Container(
+                width: 44,
+                height: 44,
+                decoration: _panelDecoration(
+                  radius: 22,
+                  stronger: true,
+                  color: _isMaterial3Style
+                      ? scheme.surfaceContainer
+                      : palette.card,
+                ),
+                child: Icon(Icons.add_rounded, color: palette.iconMuted),
+              ),
             ),
           ],
         ],
@@ -767,17 +826,102 @@ class _LibraryPageState extends State<LibraryPage> {
     );
   }
 
+  Widget _buildFloatingActionButton() {
+    final isTablet = LayoutHelper.isTablet(context);
+    final isDesktop = LayoutHelper.isDesktop(context);
+    final useRailNav = isTablet || isDesktop;
+    final bottomPadding = MediaQuery.viewPaddingOf(context).bottom;
+    final mobileChrome = HomeMobileChromeScope.of(context);
+    final scheme = Theme.of(context).colorScheme;
+
+    // 侧边导航栏模式：FAB 在右下角，边距较小
+    // 底部导航栏模式：FAB 需要避开导航栏
+    final double bottomMargin = useRailNav
+        ? bottomPadding +
+              16 // 侧边导航：只需避开安全区域
+        : mobileChrome.floatingActionBottomMargin; // 底部导航：避开悬浮导航栏
+
+    if (_isMaterial3Style) {
+      return Container(
+        margin: EdgeInsets.only(bottom: bottomMargin),
+        child: FloatingActionButton(
+          onPressed: () async {
+            final result = await Navigator.push(
+              context,
+              MaterialPageRoute(builder: (context) => const ImportBookPage()),
+            );
+            if (result == true && mounted) {
+              _loadBooks();
+            }
+          },
+          backgroundColor: scheme.primaryContainer,
+          foregroundColor: scheme.onPrimaryContainer,
+          elevation: 2,
+          heroTag: "add_book_fab",
+          child: const Icon(Icons.add, size: 28),
+        ),
+      );
+    }
+
+    return Container(
+      margin: EdgeInsets.only(bottom: bottomMargin),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.3),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+            spreadRadius: 0,
+          ),
+        ],
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(16),
+        child: BackdropFilter(
+          enabled: !GlassEffectConfig.shouldDisableBlur,
+          filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+          child: FloatingActionButton(
+            onPressed: () async {
+              final result = await Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => const ImportBookPage()),
+              );
+              // 导入完成后刷新书籍列表
+              if (result == true && mounted) {
+                _loadBooks();
+              }
+            },
+            backgroundColor: Theme.of(context).colorScheme.primary.withValues(
+              alpha: GlassEffectConfig.effectiveOpacity(0.9),
+            ),
+            foregroundColor: Colors.white,
+            elevation: 0,
+            heroTag: "add_book_fab", // 添加唯一标识避免冲突
+            child: const Icon(Icons.add, size: 28),
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildEmptyLibrary() {
-    final palette = PageStyleHelper.palette(context);
     return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
           const AppBrandIcon(size: 56, borderRadius: 14),
           const SizedBox(height: 16),
-          Text(
-            context.l10n.libraryNoBooks,
-            style: TextStyle(fontSize: 15, color: palette.textMuted),
+          TextButton.icon(
+            onPressed: () async {
+              await Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => const ImportBookPage()),
+              );
+              _loadBooks();
+            },
+            icon: const Icon(Icons.add),
+            label: Text(context.l10n.importBooks),
           ),
         ],
       ),
@@ -1253,6 +1397,92 @@ class _LibraryPageState extends State<LibraryPage> {
     showSideToast(context, context.l10n.downloadRunningInBackground);
   }
 
+  /// 手动 AI 预处理：校验模型可用并确认 token 消耗后加入后台队列，
+  /// 进度到"下载任务"页的 AI 预处理 Tab 查看。
+  Future<void> _confirmAiPreprocess(Book book) async {
+    final l10n = context.l10n;
+    final settings = await ReaderHttpAIService().loadSettings();
+    if (!mounted) return;
+    if (!settings.isConfigured) {
+      showSideToast(
+        context,
+        l10n.settingsAiPreprocessNeedModel,
+        kind: SideToastKind.error,
+      );
+      return;
+    }
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(l10n.libraryAiPreprocess),
+        content: Text(l10n.libraryAiPreprocessConfirm(book.title)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: Text(l10n.cancel),
+          ),
+          FilledButton.tonal(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: Text(l10n.confirm),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    // 列表查询不含 textEncoding 等全量字段，入队前取完整记录。
+    final fullBook = book.id == null
+        ? null
+        : await _bookDao.getBookById(book.id!);
+    if (!mounted) return;
+    AiPreprocessTaskController().enqueue(fullBook ?? book);
+    showSideToast(
+      context,
+      l10n.libraryAiPreprocessQueued,
+      kind: SideToastKind.success,
+    );
+  }
+
+  Future<void> _exportBook(Book book) async {
+    if (!_exportingBookPaths.add(book.filePath)) return;
+    showSideToast(context, context.l10n.bookExportInProgress);
+    try {
+      final result = await BookExportService().export(book);
+      if (!mounted) return;
+      switch (result.status) {
+        case BookExportStatus.success:
+          final location = result.location ?? result.displayName ?? book.title;
+          showSideToast(
+            context,
+            context.l10n.bookExportSuccess(location),
+            kind: SideToastKind.success,
+          );
+        case BookExportStatus.cancelled:
+          break;
+        case BookExportStatus.sourceMissing:
+        case BookExportStatus.notDownloaded:
+          showSideToast(
+            context,
+            context.l10n.bookExportSourceMissing,
+            kind: SideToastKind.warning,
+          );
+        case BookExportStatus.unsupported:
+          showSideToast(
+            context,
+            context.l10n.bookExportUnsupported,
+            kind: SideToastKind.warning,
+          );
+        case BookExportStatus.failure:
+          showSideToast(
+            context,
+            context.l10n.bookExportFailed,
+            kind: SideToastKind.error,
+          );
+      }
+    } finally {
+      _exportingBookPaths.remove(book.filePath);
+    }
+  }
+
   void _showBookOptions(Book book) {
     final scheme = Theme.of(context).colorScheme;
     final isMaterial3Style = _isMaterial3Style;
@@ -1497,6 +1727,28 @@ class _LibraryPageState extends State<LibraryPage> {
                             },
                           ),
                       ],
+                      if (!book.isOnline && book.filePath.isNotEmpty)
+                        _buildOptionItem(
+                          context: context,
+                          icon: Icons.file_upload_outlined,
+                          iconColor: localScheme.secondary,
+                          title: context.l10n.libraryExportBook,
+                          onTap: () {
+                            Navigator.pop(context);
+                            unawaited(_exportBook(book));
+                          },
+                        ),
+                      if (BookTextExtractionService.supports(book))
+                        _buildOptionItem(
+                          context: context,
+                          icon: Icons.auto_awesome_outlined,
+                          iconColor: localScheme.primary,
+                          title: context.l10n.libraryAiPreprocess,
+                          onTap: () {
+                            Navigator.pop(context);
+                            unawaited(_confirmAiPreprocess(book));
+                          },
+                        ),
                       _buildOptionItem(
                         context: context,
                         icon: Icons.delete_outline_rounded,

@@ -62,6 +62,11 @@ extension _HomeShellLayoutPart on _HomeShellPageState {
   /// - 右侧直接渲染当前 index 对应页面，结构更直观。
   Widget _buildNavigationRail() {
     final scheme = Theme.of(context).colorScheme;
+    final palette = PageStyleHelper.palette(context);
+    final currentPage = _navigationItems[_selectedIndex].page;
+    final showImportAction =
+        (currentPage is HomeDashboardPage || currentPage is LibraryPage) &&
+        !_libraryController.selection.value.isActive;
     final railPanel = Container(
       width: LayoutHelper.getValue(
         context,
@@ -161,7 +166,47 @@ extension _HomeShellLayoutPart on _HomeShellPageState {
           ],
         ),
       ),
-      floatingActionButton: null,
+      floatingActionButton: showImportAction
+          ? (_isMaterial3Style
+                ? FloatingActionButton.extended(
+                    onPressed: () => _navigateToImport(),
+                    backgroundColor: scheme.primaryContainer,
+                    foregroundColor: scheme.onPrimaryContainer,
+                    elevation: 2,
+                    icon: const Icon(Icons.add),
+                    label: Text(context.l10n.importBooks),
+                  )
+                : Container(
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(16),
+                      boxShadow: [
+                        BoxShadow(
+                          color: palette.backgroundStart.withValues(
+                            alpha: 0.28,
+                          ),
+                          blurRadius: 8,
+                          offset: const Offset(0, 4),
+                        ),
+                      ],
+                    ),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(16),
+                      child: BackdropFilter(
+                        enabled: !_disableShellBlur,
+                        filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+                        child: FloatingActionButton.extended(
+                          onPressed: () => _navigateToImport(),
+                          backgroundColor: scheme.primary.withValues(
+                            alpha: GlassEffectConfig.effectiveOpacity(0.9),
+                          ),
+                          foregroundColor: scheme.onPrimary,
+                          icon: const Icon(Icons.add),
+                          label: Text(context.l10n.importBooks),
+                        ),
+                      ),
+                    ),
+                  ))
+          : null,
     );
   }
 
@@ -470,6 +515,23 @@ extension _HomeShellLayoutPart on _HomeShellPageState {
           onTap: () => _switchToTab(settingsIndex),
         );
       }
+    } else if (currentPage is AiPage) {
+      trailing = Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _buildTopBarActionButton(
+            icon: Icons.history_rounded,
+            tooltip: context.l10n.aiHistoryTitle,
+            onTap: _aiPageController.openHistory,
+          ),
+          const SizedBox(width: 8),
+          _buildTopBarActionButton(
+            icon: Icons.add_comment_outlined,
+            tooltip: context.l10n.aiChatNewChat,
+            onTap: _aiPageController.startNewChat,
+          ),
+        ],
+      );
     } else if (currentPage is LibraryPage) {
       final selection = _libraryController.selection.value;
       if (selection.isActive) {
@@ -523,6 +585,11 @@ extension _HomeShellLayoutPart on _HomeShellPageState {
                     ),
                 onTapWithRect: _libraryController.showFilterMenu,
               ),
+            ),
+            const SizedBox(width: 8),
+            _buildTopBarActionButton(
+              icon: Icons.add_rounded,
+              onTap: _navigateToImport,
             ),
           ],
         );
@@ -710,6 +777,13 @@ extension _HomeShellLayoutPart on _HomeShellPageState {
         child: wrappedPage,
       ),
     );
+  }
+
+  void _navigateToImport() {
+    // 导入页使用标准 Material 路由，避免透明叠加时出现黑底观感。
+    Navigator.of(
+      context,
+    ).push(MaterialPageRoute(builder: (_) => const ImportBookPage()));
   }
 
   // 导航头部组件 - 专为平板和桌面优化

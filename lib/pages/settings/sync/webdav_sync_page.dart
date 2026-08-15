@@ -7,6 +7,7 @@ import 'package:xxread/utils/localization_extension.dart';
 import 'package:xxread/utils/page_style_helper.dart';
 
 import 'webdav_setup_page.dart';
+import 'book_file_sync_page.dart';
 import 'webdav_sync_content_page.dart';
 import 'webdav_sync_translator.dart';
 
@@ -31,6 +32,7 @@ class WebDavSyncPage extends StatelessWidget {
                 _StatusCard(sync: sync),
                 _AutomaticSyncCard(sync: sync),
                 _ScopeCard(sync: sync),
+                _BookFilesCard(sync: sync),
                 _ConnectionCard(sync: sync),
                 _SecurityCard(),
               ];
@@ -50,7 +52,7 @@ class WebDavSyncPage extends StatelessWidget {
                                     children: [
                                       sections[0],
                                       const SizedBox(height: 16),
-                                      sections[4],
+                                      sections[5],
                                     ],
                                   ),
                                 ),
@@ -64,6 +66,8 @@ class WebDavSyncPage extends StatelessWidget {
                                       sections[2],
                                       const SizedBox(height: 16),
                                       sections[3],
+                                      const SizedBox(height: 16),
+                                      sections[4],
                                     ],
                                   ),
                                 ),
@@ -325,6 +329,40 @@ class _ConnectionCard extends StatelessWidget {
             ),
           ],
         ],
+      ),
+    );
+  }
+}
+
+class _BookFilesCard extends StatelessWidget {
+  const _BookFilesCard({required this.sync});
+
+  final WebDavSyncController sync;
+
+  @override
+  Widget build(BuildContext context) {
+    final available = sync.remoteBooks
+        .where((book) => book.fileAvailable)
+        .length;
+    return _Card(
+      child: ListTile(
+        contentPadding: EdgeInsets.zero,
+        leading: const Icon(Icons.cloud_download_outlined),
+        title: Text(context.l10n.webDavBookFilesTitle),
+        subtitle: Text(
+          available == 0
+              ? context.l10n.webDavBookFilesHint
+              : '${context.l10n.webDavFilesAvailableDownload}：$available',
+        ),
+        trailing: const Icon(Icons.chevron_right_rounded),
+        enabled: sync.isConfigured,
+        onTap: sync.isConfigured
+            ? () => Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => const BookFileSyncPage(),
+                ),
+              )
+            : null,
       ),
     );
   }
