@@ -139,7 +139,13 @@ class _SourceSearchPageState extends State<SourceSearchPage> {
       targetSources.map((source) {
         return limiter.run(() async {
           try {
-            final page = await widget.client.search(source, query);
+            // 硬超时兜底：单个源的网络/JS 各层超时之上再封顶 60s，
+            // 防止任何未预见的挂起（如 JS 引擎 promise 丢失、
+            // SharedPreferences 卡住）永久占用并发槽——此前 16 个
+            // 槽被挂起任务耗尽后，进度会停在某个数字不再前进。
+            final page = await widget.client
+                .search(source, query)
+                .timeout(const Duration(seconds: 60));
             batches.add(
               _SearchBatch(
                 source: source,

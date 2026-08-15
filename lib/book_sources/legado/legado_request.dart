@@ -138,10 +138,11 @@ class LegadoRequestTemplate {
         headers[name] = value;
       }
     }
-    // 部分书源显式写 "charset": ""，空值与未声明一样回退 utf-8。
+    // 部分书源显式写 "charset": ""，空值与未声明一样回退 utf-8；
+    // "escape" 是 Legado 的 URL 参数编码方式而非字符集，按 utf-8 处理。
     final charset =
         '${options['charset'] ?? ''}'.trim().toLowerCase();
-    final effectiveCharset = charset.isEmpty || charset == 'utf-8'
+    final effectiveCharset = charset.isEmpty || charset == 'escape'
         ? 'utf-8'
         : charset;
     if (!_supportedCharsets.contains(effectiveCharset)) {

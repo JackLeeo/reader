@@ -384,9 +384,21 @@ class LegadoRuleEngine {
                 ),
         );
       } else {
+        // html 包的 querySelectorAll 不支持属性选择器，而 og:novel meta
+        // 提取（[property=og:novel:author]@content）是详情页规则的标配
+        // 写法。这里把 [..] 段拆出来，剩余 CSS 交给 html 包，属性谓词
+        // 在 Dart 端过滤。
+        final clause = _splitAttrSelectors(parsed.css);
+        final baseCss = clause.base.isEmpty ? '*' : clause.base;
         try {
-          if (includeRoots && _matches(root, parsed.css)) selected.add(root);
-          selected.addAll(root.querySelectorAll(parsed.css));
+          if (includeRoots && _matches(root, baseCss, clause.attrs)) {
+            selected.add(root);
+          }
+          selected.addAll(
+            root.querySelectorAll(baseCss).where(
+              (element) => _matchAttrs(element, clause.attrs),
+            ),
+          );
         } on FormatException {
           throw BookSourceProtocolException(
             'Unsupported Legado CSS selector: ${parsed.css}.',
@@ -582,18 +594,106 @@ class _LegacySelector {
   final String? text;
 }
 
+/// 从 CSS 里拆出的属性谓词：`[name]`、`[name=value]`、`[name~=value]`。
+class _AttrPredicate {
+  const _AttrPredicate({required this.name, this.value, this.wordMatch = false});
+
+  final String name;
+  final String? value;
+  final bool wordMatch;
+}
+
+class _AttrClause {
+  const _AttrClause({required this.base, required this.attrs});
+
+  final String base;
+  final List<_AttrPredicate> attrs;
+}
+
+/// 把选择器拆成「html 包可解析的基础 CSS」+「属性谓词列表」。
+///
+/// 支持值中含 `:`、`|` 等字符（如 `[property=og:novel:author]`、
+/// `[property~=category|status|update_time]`）与单/双引号包裹的值。
+_AttrClause _splitAttrSelectors(String css) {
+  final buffer = StringBuffer();
+  final predicates = <_AttrPredicate>[];
+  for (var i = 0; i < css.length; i++) {
+    final char = css[i];
+    if (char != '[') {
+      buffer.write(char);
+      continue;
+    }
+    final close = css.indexOf(']', i);
+    if (close < 0) {
+      // 未闭合的 [ 交回 html 包（大概率也解析失败，走可诊断错误）。
+      buffer.write(css.substring(i));
+      break;
+    }
+    final body = css.substring(i + 1, close);
+    i = close;
+    final tilde = body.indexOf('~=');
+    final eq = body.indexOf('=');
+    if (tilde >= 0 && (eq < 0 || tilde == eq - 1)) {
+      predicates.add(_AttrPredicate(
+        name: _trimQuotes(body.substring(0, tilde).trim()),
+        value: _trimQuotes(body.substring(tilde + 2).trim()),
+        wordMatch: true,
+      ));
+    } else if (eq >= 0) {
+      predicates.add(_AttrPredicate(
+        name: _trimQuotes(body.substring(0, eq).trim()),
+        value: _trimQuotes(body.substring(eq + 1).trim()),
+      ));
+    } else {
+      predicates.add(_AttrPredicate(name: _trimQuotes(body.trim())));
+    }
+  }
+  return _AttrClause(
+    base: buffer.toString().trim(),
+    attrs: predicates,
+  );
+}
+
+String _trimQuotes(String value) {
+  if (value.length >= 2 &&
+      ((value.startsWith('"') && value.endsWith('"')) ||
+          (value.startsWith("'") && value.endsWith("'")))) {
+    return value.substring(1, value.length - 1);
+  }
+  return value;
+}
+
+bool _matchAttrs(Element element, List<_AttrPredicate> attrs) {
+  for (final predicate in attrs) {
+    final raw = element.attributes[predicate.name];
+    if (raw == null) return false;
+    final value = predicate.value;
+    if (value == null) continue;
+    if (predicate.wordMatch) {
+      if (!raw.split(RegExp(r'\s+')).contains(value)) return false;
+    } else if (raw.trim() != value) {
+      return false;
+    }
+  }
+  return true;
+}
+
 int _normalizedIndex(int index, int length) =>
     index < 0 ? length + index : index;
 
 String _ownText(Element element) =>
     element.nodes.whereType<Text>().map((node) => node.data).join().trim();
 
-bool _matches(Element element, String selector) {
+bool _matches(Element element, String baseCss, List<_AttrPredicate> attrs) {
   final parent = element.parent;
   if (parent != null) {
-    return parent.querySelectorAll(selector).contains(element);
+    return parent
+        .querySelectorAll(baseCss)
+        .where((candidate) => _matchAttrs(candidate, attrs))
+        .contains(element);
   }
-  return selector == '*' || selector == element.localName;
+  if (baseCss != '*' && baseCss != element.localName) return false;
+  return _matchAttrs(element, attrs);
 }
 
 String _stringValue(Object? value) => switch (value) {

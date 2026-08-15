@@ -32,7 +32,7 @@ class LegadoRuntime {
     int pageSize = 20,
   }) async {
     final source = _source(registered);
-    await _ensureRunnable(source);
+    await _ensureSearchRunnable(source);
     final vars = _jsVariables(source, {'key': query.trim(), 'page': '$page'});
     final response = await _request(
       source,
@@ -636,6 +636,18 @@ class LegadoRuntime {
         'This compatible source uses features that are not supported yet.',
       );
     }
+  }
+
+  /// 仅搜索链路预检 searchUrl 模板。
+  ///
+  /// 不要在 getBook/getChapters/getChapterContent 里做这个预检：
+  /// 阅读链路根本不发搜索请求，searchUrl 是否含脚本与目录/正文无关。
+  /// 此前用假关键词 'preflight' 预检还会让依赖真实搜索词的脚本走错
+  /// 分支，或因 JS 引擎不可用（iOS 无 flutter_js pod / 构造失败）而
+  /// 误抛 "uses scripting" / "unsupported template expression"，
+  /// 表现为发现页正常但点阅读必失败。
+  Future<void> _ensureSearchRunnable(LegadoBookSource source) async {
+    await _ensureRunnable(source);
     final headers = await _sourceHeaders(source);
     final expandedSearch = await _expandTemplate(
       source.searchUrl,

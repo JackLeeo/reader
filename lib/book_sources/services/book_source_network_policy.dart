@@ -92,11 +92,14 @@ class BookSourceNetworkPolicy {
   /// 动机：部分网络环境下系统 DNS 服务器无响应或极慢（实测未缓存域名
   /// 解析可达 12s+），直接拖垮聚合搜索；运营商劫持场景下 DoH 也能给出
   /// 干净结果。任一通道失败/超时都被折叠为"永不完成"，让另一条通道独
-  /// 立胜出；两条通道都失败时由整体 6s 硬上限兜底报错，绝不永久悬挂。
-  /// 系统解析侧的分支超时仅在真实运行环境启用（widget 测试环境下真实
-  /// DNS 查询可能不完成，超时定时器会在 teardown 时以 pending timer 报
-  /// 错），整体硬上限在两种环境下都会生效。
+  /// 独立胜出；两条通道都失败时由整体 6s 硬上限兜底报错，绝不永久悬挂。
+  /// widget 测试环境（FLUTTER_TEST）下整个竞速不启用，退回纯系统解析。
   Future<List<InternetAddress>> _resolveWithDohRace(String host) async {
+    // widget 测试环境（FLUTTER_TEST）下退回纯系统解析：竞速的 4s/6s
+    // 超时定时器在 fake_async 里永远不会触发，测试 teardown 会以
+    // pending timer 报错；且 lookup 失败被竞速折叠吞掉后，详情页等
+    // 链路会从"快速失败"退化成"挂 6s 再失败"。
+    if (!_dnsTimeoutEnabled) return _lookup(host);
     Future<List<InternetAddress>> never() =>
         Completer<List<InternetAddress>>().future;
 
