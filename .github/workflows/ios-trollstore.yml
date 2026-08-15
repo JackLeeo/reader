@@ -73,10 +73,14 @@ jobs:
           # （主二进制、Flutter framework、插件 dylib）。
           # 逐文件用 `file -b` 判断类型，避免从 `file` 输出反解路径时
           # 被文件名里的冒号/空格截断，导致 ldid 打开不存在的路径（ENOENT）。
+          # Xcode 产物中部分 framework 二进制（App/sqlite3）缺可执行位，
+          # installd 会把无执行位的 Mach-O 当资源导致巨魔安装失败，
+          # 因此统一 chmod 755。
           signed=0
           while IFS= read -r -d '' binary; do
             if file -b "$binary" | grep -q 'Mach-O'; then
               echo "Fakesigning: $binary"
+              chmod 755 "$binary"
               ldid -S "$binary"
               signed=$((signed + 1))
             fi
