@@ -71,17 +71,16 @@ jobs:
 
           # TrollStore 走 CoreTrust 漏洞安装，用 ldid 伪签名全部 Mach-O
           # （主二进制、Flutter framework、插件 dylib）。
+          # 逐文件用 `file -b` 判断类型，避免从 `file` 输出反解路径时
+          # 被文件名里的冒号/空格截断，导致 ldid 打开不存在的路径（ENOENT）。
           signed=0
           while IFS= read -r -d '' binary; do
-            ldid -S "$binary"
-            signed=$((signed + 1))
-          done < <(
-            find "$app_path" -type f -print0 \
-              | xargs -0 file \
-              | grep -E 'Mach-O (64-bit|universal)' \
-              | cut -d: -f1 \
-              | tr '\n' '\0'
-          )
+            if file -b "$binary" | grep -q 'Mach-O'; then
+              echo "Fakesigning: $binary"
+              ldid -S "$binary"
+              signed=$((signed + 1))
+            fi
+          done < <(find "$app_path" -type f -print0)
           echo "Fakesigned ${signed} Mach-O binaries."
           if (( signed == 0 )); then
             echo "::error::No Mach-O binaries were found to sign."
