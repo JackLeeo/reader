@@ -10,6 +10,7 @@ import 'package:html/parser.dart' as html_parser;
 import '../protocol/book_source_protocol.dart';
 import 'legado_js_engine.dart';
 import 'legado_jsonpath.dart';
+import 'legado_variable_store.dart';
 import 'legado_xpath.dart';
 
 class LegadoRuleDocument {
@@ -48,6 +49,7 @@ class LegadoRuleEngine {
     Object? context,
     String rule, {
     Map<String, Object?> jsVariables = const {},
+    String sourceUrl = '',
   }) async {
     final transformed = _splitTransform(rule);
     if (transformed.selector.trimLeft().startsWith(':')) {
@@ -59,6 +61,7 @@ class LegadoRuleEngine {
       transformed.selector,
       listMode: true,
       jsVariables: jsVariables,
+      sourceUrl: sourceUrl,
     );
     return values.where((value) => value != null).toList(growable: false);
   }
@@ -96,6 +99,7 @@ class LegadoRuleEngine {
     String rule, {
     bool resolveUrl = false,
     Map<String, Object?> jsVariables = const {},
+    String sourceUrl = '',
   }) async {
     final transformed = _splitTransform(rule);
     final selected = transformed.selector.trim().isEmpty
@@ -106,6 +110,7 @@ class LegadoRuleEngine {
             transformed.selector,
             listMode: false,
             jsVariables: jsVariables,
+            sourceUrl: sourceUrl,
           );
     final values = selected
         .map(_stringValue)
@@ -168,6 +173,7 @@ class LegadoRuleEngine {
     String selector, {
     required bool listMode,
     Map<String, Object?> jsVariables = const {},
+    String sourceUrl = '',
   }) async {
     for (final fallback in selector.split('||')) {
       final concatenated = <Object?>[];
@@ -179,6 +185,7 @@ class LegadoRuleEngine {
             part.trim(),
             listMode: listMode,
             jsVariables: jsVariables,
+            sourceUrl: sourceUrl,
           ),
         );
       }
@@ -196,6 +203,7 @@ class LegadoRuleEngine {
     String rule, {
     required bool listMode,
     Map<String, Object?> jsVariables = const {},
+    String sourceUrl = '',
   }) async {
     var normalized = rule.trim();
     if (normalized.startsWith('+')) {
@@ -210,6 +218,11 @@ class LegadoRuleEngine {
     if (normalized.isEmpty) return const [];
     final root = context ?? document.value;
 
+    // 变量池语法：整条规则为 @get:{name} 直接取值。
+    if (sourceUrl.isNotEmpty && normalized.startsWith('@get:')) {
+      return [LegadoVariableStore.instance.get(sourceUrl, _getVariableName(normalized)) ?? ''];
+    }
+
     // XPath 规则（// 开头）。
     if (normalized.startsWith('//')) {
       return _evaluateXPath(root, normalized);
@@ -218,7 +231,8 @@ class LegadoRuleEngine {
     if (normalized.toLowerCase().startsWith('@js:') ||
         normalized.startsWith('<js>')) {
       return [
-        await _evaluateJsRule(normalized, document, root, jsVariables),
+        await _evaluateJsRule(normalized, document, root, jsVariables,
+            sourceUrl: sourceUrl),
       ];
     }
 
@@ -226,7 +240,15 @@ class LegadoRuleEngine {
       return [root.expand(normalized)];
     }
     if (normalized.contains('{{')) {
-      return [await _interpolate(normalized, root, document, jsVariables)];
+      return [
+        await _interpolate(
+          normalized,
+          root,
+          document,
+          jsVariables,
+          sourceUrl: sourceUrl,
+        ),
+      ];
     }
     if ((normalized.startsWith('"') && normalized.endsWith('"')) ||
         (normalized.startsWith("'") && normalized.endsWith("'"))) {
@@ -252,7 +274,14 @@ class LegadoRuleEngine {
       listMode: listMode,
       document: document,
       jsVariables: jsVariables,
+      sourceUrl: sourceUrl,
     );
+  }
+
+  /// 从 `@get:{name}` 文本中提取变量名；格式非法时返回空串。
+  static String _getVariableName(String rule) {
+    final match = RegExp(r'@get:\{([^{}]+)\}').firstMatch(rule);
+    return match?.group(1)?.trim() ?? '';
   }
 
   List<Object?> _evaluateXPath(Object? root, String expression) {
@@ -272,8 +301,9 @@ class LegadoRuleEngine {
     String rule,
     LegadoRuleDocument document,
     Object? root,
-    Map<String, Object?> jsVariables,
-  ) async {
+    Map<String, Object?> jsVariables, {
+    String sourceUrl = '',
+  }) async {
     var code = rule;
     if (code.toLowerCase().startsWith('@js:')) {
       code = code.substring(4);
@@ -298,6 +328,7 @@ class LegadoRuleEngine {
           ...jsVariables,
         },
         prelude: prelude is String ? prelude : '',
+        sourceUrl: sourceUrl,
       );
     } on LegadoJsException catch (error) {
       throw BookSourceProtocolException(error.message);
@@ -323,12 +354,36 @@ class LegadoRuleEngine {
     required bool listMode,
     required LegadoRuleDocument document,
     Map<String, Object?> jsVariables = const {},
+    String sourceUrl = '',
   }) async {
     final segments = rule.split('@').where((part) => part.isNotEmpty).toList();
     if (segments.isEmpty) return roots;
     var current = roots;
     for (var index = 0; index < segments.length; index++) {
       var segment = segments[index].trim();
+      // 变量存段：put:{name:subrule} —— 先求 subrule 存入变量池，
+      // 该段不产出内容（Legado 语义：put 的值通过 @get:{name} 使用）。
+      if (sourceUrl.isNotEmpty && segment.startsWith('put:{')) {
+        final putMatch = RegExp(r'^put:\{([^{}:]+):([\s\S]*)\}$')
+            .firstMatch(segment);
+        if (putMatch != null) {
+          final name = putMatch.group(1)!.trim();
+          final subRule = putMatch.group(2)!.trim();
+          final stored = await _evaluateSingle(
+            document,
+            current.length == 1 ? current.first : current.join(),
+            subRule,
+            listMode: false,
+            jsVariables: jsVariables,
+            sourceUrl: sourceUrl,
+          );
+          final value = stored.map(_stringValue).where((v) => v.isNotEmpty).join();
+          if (value.isNotEmpty) {
+            LegadoVariableStore.instance.put(sourceUrl, name, value);
+          }
+          continue;
+        }
+      }
       // js:/<js> 段：把前面段的累积文本作为 result 交给脚本。
       if (segment.toLowerCase().startsWith('js:') ||
           segment.startsWith('<js>')) {
@@ -339,6 +394,7 @@ class LegadoRuleEngine {
             document,
             resultText,
             jsVariables,
+            sourceUrl: sourceUrl,
           ),
         ];
       }
@@ -459,8 +515,9 @@ class LegadoRuleEngine {
     String template,
     Object? context,
     LegadoRuleDocument doc,
-    Map<String, Object?> jsVariables,
-  ) async {
+    Map<String, Object?> jsVariables, {
+    String sourceUrl = '',
+  }) async {
     final matches = RegExp(r'\{\{\s*([^{}]+?)\s*\}\}').allMatches(template);
     var result = template;
     for (final match in matches) {
@@ -481,6 +538,7 @@ class LegadoRuleEngine {
             doc,
             context,
             jsVariables,
+            sourceUrl: sourceUrl,
           );
         }
       } else {
@@ -490,6 +548,7 @@ class LegadoRuleEngine {
           doc,
           context,
           jsVariables,
+          sourceUrl: sourceUrl,
         );
         if (replacement.isEmpty) {
           replacement = _jsonPathEvaluator
@@ -516,8 +575,9 @@ class LegadoRuleEngine {
     String expression,
     LegadoRuleDocument doc,
     Object? context,
-    Map<String, Object?> jsVariables,
-  ) async {
+    Map<String, Object?> jsVariables, {
+    String sourceUrl = '',
+  }) async {
     final engine = LegadoJsEngine.instance;
     if (engine == null) return '';
     final prelude = jsVariables['prelude'];
@@ -529,6 +589,7 @@ class LegadoRuleEngine {
           ...jsVariables,
         },
         prelude: prelude is String ? prelude : '',
+        sourceUrl: sourceUrl,
       );
     } catch (_) {
       return '';

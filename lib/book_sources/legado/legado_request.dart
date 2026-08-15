@@ -40,6 +40,12 @@ class LegadoRequestTemplate {
         'Legado request contains an unsupported template expression.',
       );
     }
+    if (_unresolvedGetSyntax.hasMatch(expanded)) {
+      throw const BookSourceProtocolException(
+        'Legado request references an unknown source variable '
+        '(@get:{...}); run a search first to populate it.',
+      );
+    }
     if (_unsupportedRequestSyntax.hasMatch(expanded)) {
       throw const BookSourceProtocolException(
         'Legado request uses scripting, which is not supported.',
@@ -383,8 +389,9 @@ const defaultLegadoUserAgent =
 
 const _supportedCharsets = {'utf-8', 'utf8', 'gbk', 'gb2312', 'gb18030'};
 final _unresolvedVariables = RegExp(r'\{\{[^{}]+\}\}');
+final _unresolvedGetSyntax = RegExp(r'@get:\{[^{}]*\}');
 final _unsupportedRequestSyntax = RegExp(
-  r'@js:|<js>|@put:|@get:',
+  r'@js:|<js>|@put:',
   caseSensitive: false,
 );
 const _forbiddenHeaders = {

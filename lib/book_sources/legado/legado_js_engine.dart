@@ -9,6 +9,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter_js/flutter_js.dart';
 
 import 'legado_cookie_jar.dart';
+import 'legado_variable_store.dart';
 
 class LegadoJsException implements Exception {
   const LegadoJsException(this.message);
@@ -65,15 +66,19 @@ class LegadoJsEngine {
   /// [variables] 注入为脚本全局变量（key/page/result/baseUrl/src/title/
   /// host/book/chapter）。脚本内 java.ajax 等网络调用自动往返预取。
   /// [prelude] 为源级 jsLib，先于脚本执行。
+  /// [sourceUrl] 指定书源时，java.put/get 与 Dart 侧 `@get:`/`@put:`
+  /// 语法共享同一变量池（按源隔离，跨请求持久）。
   Future<String> evaluateScript(
     String code,
     Map<String, Object?> variables, {
     String prelude = '',
     int maxHops = 8,
+    String sourceUrl = '',
   }) async {
     return _run(
       _wrapStatement(_withPrelude(prelude, code), variables),
       maxHops,
+      sourceUrl: sourceUrl,
     );
   }
 
@@ -83,10 +88,12 @@ class LegadoJsEngine {
     Map<String, Object?> variables, {
     String prelude = '',
     int maxHops = 8,
+    String sourceUrl = '',
   }) async {
     return _run(
       _wrapExpression(expression, variables, prelude),
       maxHops,
+      sourceUrl: sourceUrl,
     );
   }
 
@@ -123,17 +130,18 @@ class LegadoJsEngine {
         'return typeof __out==="object"&&__out!==null?JSON.stringify(__out):String(__out);})()';
   }
 
-  Future<String> _run(String script, int maxHops) {
+  Future<String> _run(String script, int maxHops, {String sourceUrl = ''}) {
     // 整体预算：复杂脚本 + 多轮网络预取最多 15s，防止死循环或
     // 慢网络把阅读页永久卡在加载态。
-    return _runUnchecked(script, maxHops).timeout(
+    return _runUnchecked(script, maxHops, sourceUrl: sourceUrl).timeout(
       const Duration(seconds: 15),
       onTimeout: () =>
           throw const LegadoJsException('Legado JS evaluation timed out.'),
     );
   }
 
-  Future<String> _runUnchecked(String script, int maxHops) async {
+  Future<String> _runUnchecked(String script, int maxHops,
+      {String sourceUrl = ''}) async {
     final runtime = _runtime;
     if (runtime == null) {
       throw const LegadoJsException('JS runtime is not available.');
@@ -143,6 +151,16 @@ class LegadoJsEngine {
       final snapshot = LegadoCookieJar.instance.cookieHeaderSnapshot();
       runtime.evaluate('java.__cookies = ${jsonEncode(snapshot)};');
     } catch (_) {}
+    // 注入按源隔离的变量池快照，java.put/get 与 Dart 侧 `@get:` 共享。
+    if (sourceUrl.isNotEmpty) {
+      try {
+        runtime.evaluate(
+          'java.__sourceUrl=${jsonEncode(sourceUrl)};'
+          'java.__vars=${jsonEncode(LegadoVariableStore.instance.snapshot(sourceUrl))};'
+          'java.__varUpdates={};',
+        );
+      } catch (_) {}
+    }
     for (var hop = 0; hop <= maxHops; hop++) {
       final result = runtime.evaluate(script);
       final text = result.stringResult;
@@ -163,6 +181,7 @@ class LegadoJsEngine {
         throw LegadoJsException('Legado JS error: $firstLine');
       }
       _collectCookieUpdates(runtime);
+      if (sourceUrl.isNotEmpty) _collectVariableUpdates(runtime, sourceUrl);
       return text == 'null' || text == 'undefined' ? '' : text;
     }
     throw const LegadoJsException('Legado JS execution failed.');
@@ -198,6 +217,25 @@ class LegadoJsEngine {
       }
     } catch (_) {
       // Cookie 回收失败不影响脚本结果。
+    }
+  }
+
+  /// 回收脚本内 java.put 写入的变量更新到 Dart 侧变量池。
+  void _collectVariableUpdates(JavascriptRuntime runtime, String sourceUrl) {
+    try {
+      final raw = runtime.evaluate('JSON.stringify(java.__varUpdates || {})');
+      if (raw.isError) return;
+      final decoded = jsonDecode(raw.stringResult);
+      if (decoded is Map && decoded.isNotEmpty) {
+        final updates = <String, String>{
+          for (final entry in decoded.entries)
+            if (entry.value is String) '$entry.key': entry.value as String,
+        };
+        LegadoVariableStore.instance.merge(sourceUrl, updates);
+        runtime.evaluate('java.__varUpdates = {};');
+      }
+    } catch (_) {
+      // 变量回收失败不影响脚本结果。
     }
   }
 
@@ -607,17 +645,24 @@ const String _bridgeScript = r'''
     __responses: {},
     __cookieUpdates: {},
     __cookies: {},
+    __vars: {},
+    __varUpdates: {},
     isDebug: false,
     version: '20240701',
     put: function (key, value) {
-      if (value === undefined) return __kv[key] || '';
-      __kv[key] = String(value);
+      if (value === undefined) return __kv[key] || (java.__vars[key] !== undefined ? java.__vars[key] : '');
+      var str = String(value);
+      __kv[key] = str;
+      java.__vars[key] = str;
+      java.__varUpdates[key] = str;
       return value;
     },
     get: function (keyOrUrl, headers) {
       if (arguments.length === 1 && typeof keyOrUrl === 'string'
         && !/^https?:\/\//i.test(keyOrUrl)) {
-        return __kv[keyOrUrl] || '';
+        return __kv[key] !== undefined && __kv[key] !== ''
+          ? __kv[key]
+          : (java.__vars[keyOrUrl] || '');
       }
       return __needResp({ method: 'GET', url: keyOrUrl, headers: headers });
     },
@@ -684,6 +729,8 @@ const String _bridgeScript = r'''
     },
     urlEncode: function (str) { return encodeURIComponent(String(str)); },
     urlDecode: function (str) { return decodeURIComponent(String(str)); },
+    encodeURI: function (str) { return encodeURI(String(str)); },
+    decodeURI: function (str) { return decodeURI(String(str)); },
     timeFormat: timeFormat,
     timeFormatUTC: timeFormat,
     getRandom: function (min, max) {

@@ -21,6 +21,7 @@ enum LegadoCompatibilityIssue {
   customProxy,
   missingSearch,
   missingReadingRules,
+  rhinoScript,
 }
 
 class LegadoBookSource {
@@ -232,6 +233,15 @@ class LegadoCompatibilityScanner {
       if (text.contains('"proxy"')) {
         issues.add(LegadoCompatibilityIssue.customProxy);
       }
+      // Rhino 专属语法（JavaImporter/importPackage/Packages.*）只在
+      // Legado Android 的 Rhino 引擎上可执行；QuickJS 物理上不支持，
+      // 运行时必然失败且错误信息晦涩（"uses scripting"），导入即拦截。
+      if (text.contains('javaimporter') ||
+          text.contains('importpackage') ||
+          text.contains('packages.java') ||
+          text.contains('packages.javax')) {
+        issues.add(LegadoCompatibilityIssue.rhinoScript);
+      }
     });
 
     const blocked = {
@@ -241,6 +251,7 @@ class LegadoCompatibilityScanner {
       LegadoCompatibilityIssue.customProxy,
       LegadoCompatibilityIssue.missingSearch,
       LegadoCompatibilityIssue.missingReadingRules,
+      LegadoCompatibilityIssue.rhinoScript,
     };
     final hasBlockedIssue = issues.any(blocked.contains);
     final level = hasBlockedIssue

@@ -139,13 +139,13 @@ class _SourceSearchPageState extends State<SourceSearchPage> {
       targetSources.map((source) {
         return limiter.run(() async {
           try {
-            // 硬超时兜底：单个源的网络/JS 各层超时之上再封顶 60s，
-            // 防止任何未预见的挂起（如 JS 引擎 promise 丢失、
-            // SharedPreferences 卡住）永久占用并发槽——此前 16 个
-            // 槽被挂起任务耗尽后，进度会停在某个数字不再前进。
+            // 硬超时兜底：单个源搜索总预算 20s。网络层 12s + JS 15s
+            // 的内部超时之上再封顶，防止任何未预见的挂起（如 JS 引擎
+            // promise 丢失）永久占用并发槽。此前 60s 预算下，大量慢源
+            // 依次占用 16 个槽位，表现为"卡在第 N 个源"且整体极慢。
             final page = await widget.client
                 .search(source, query)
-                .timeout(const Duration(seconds: 60));
+                .timeout(const Duration(seconds: 20));
             batches.add(
               _SearchBatch(
                 source: source,

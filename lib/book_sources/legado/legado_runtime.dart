@@ -8,6 +8,7 @@ import 'legado_book_source.dart';
 import 'legado_js_engine.dart';
 import 'legado_request.dart';
 import 'legado_rule_engine.dart';
+import 'legado_variable_store.dart';
 
 class LegadoRuntime {
   LegadoRuntime({LegadoTransport? transport})
@@ -46,10 +47,17 @@ class LegadoRuntime {
       null,
       _requiredRule(rule, 'bookList'),
       jsVariables: vars,
+      sourceUrl: source.url,
     );
     final books = <BookSourceBook>[];
     for (final context in contexts.take(_maxSearchItems)) {
-      final book = await _bookFromRules(document, context, rule, vars: vars);
+      final book = await _bookFromRules(
+        document,
+        context,
+        rule,
+        vars: vars,
+        sourceUrl: source.url,
+      );
       if (book != null) books.add(book);
     }
     return BookSourceSearchPage(
@@ -148,10 +156,17 @@ class LegadoRuntime {
       null,
       _requiredRule(rule, 'bookList'),
       jsVariables: vars,
+      sourceUrl: source.url,
     );
     final books = <BookSourceBook>[];
     for (final context in contexts.take(_maxSearchItems)) {
-      final book = await _bookFromRules(document, context, rule, vars: vars);
+      final book = await _bookFromRules(
+        document,
+        context,
+        rule,
+        vars: vars,
+        sourceUrl: source.url,
+      );
       if (book != null) books.add(book);
     }
     return BookSourceSearchPage(
@@ -180,6 +195,7 @@ class LegadoRuntime {
             null,
             init,
             jsVariables: vars,
+            sourceUrl: source.url,
           )).firstOrNull;
     final title = await _value(
       document,
@@ -187,6 +203,7 @@ class LegadoRuntime {
       rule,
       'name',
       jsVariables: vars,
+      sourceUrl: source.url,
     );
     if (title.isEmpty) {
       throw const BookSourceProtocolException(
@@ -196,23 +213,59 @@ class LegadoRuntime {
     return BookSourceBook(
       id: response.finalUri.toString(),
       title: title,
-      author: await _value(document, context, rule, 'author', jsVariables: vars),
+      author: await _value(
+        document,
+        context,
+        rule,
+        'author',
+        jsVariables: vars,
+        sourceUrl: source.url,
+      ),
       description: await _value(
         document,
         context,
         rule,
         'intro',
         jsVariables: vars,
+        sourceUrl: source.url,
       ),
-      coverUrl: await _uriValue(document, context, rule, 'coverUrl', vars: vars),
+      coverUrl: await _uriValue(
+        document,
+        context,
+        rule,
+        'coverUrl',
+        vars: vars,
+        sourceUrl: source.url,
+      ),
       categories: _splitCategories(
-        await _value(document, context, rule, 'kind', jsVariables: vars),
+        await _value(
+          document,
+          context,
+          rule,
+          'kind',
+          jsVariables: vars,
+          sourceUrl: source.url,
+        ),
       ),
       status: _nullable(
-        await _value(document, context, rule, 'status', jsVariables: vars),
+        await _value(
+          document,
+          context,
+          rule,
+          'status',
+          jsVariables: vars,
+          sourceUrl: source.url,
+        ),
       ),
       latestChapter: _nullable(
-        await _value(document, context, rule, 'lastChapter', jsVariables: vars),
+        await _value(
+          document,
+          context,
+          rule,
+          'lastChapter',
+          jsVariables: vars,
+          sourceUrl: source.url,
+        ),
       ),
     );
   }
@@ -242,6 +295,7 @@ class LegadoRuntime {
         null,
         _requiredRule(rule, 'chapterList'),
         jsVariables: vars,
+        sourceUrl: source.url,
       );
       for (final context in contexts) {
         final title = await _value(
@@ -250,6 +304,7 @@ class LegadoRuntime {
           rule,
           'chapterName',
           jsVariables: vars,
+          sourceUrl: source.url,
         );
         final url = await _url(
           document,
@@ -257,6 +312,7 @@ class LegadoRuntime {
           rule,
           'chapterUrl',
           jsVariables: vars,
+          sourceUrl: source.url,
         );
         if (title.isEmpty || url.isEmpty || !seenChapters.add(url)) continue;
         if (chapters.length >= _maxChapters) {
@@ -274,6 +330,7 @@ class LegadoRuntime {
         rule,
         'nextTocUrl',
         jsVariables: vars,
+        sourceUrl: source.url,
       );
     }
     if (chapters.isEmpty) {
@@ -312,6 +369,7 @@ class LegadoRuntime {
         'content',
         required: true,
         jsVariables: vars,
+        sourceUrl: source.url,
       );
       content = _rules.applyReplaceRule(
         content,
@@ -324,6 +382,7 @@ class LegadoRuntime {
         rule,
         'nextContentUrl',
         jsVariables: vars,
+        sourceUrl: source.url,
       );
     }
     if (parts.isEmpty) {
@@ -403,14 +462,31 @@ class LegadoRuntime {
             null,
             init,
             jsVariables: vars,
+            sourceUrl: source.url,
           )).firstOrNull;
-    return _rules.evaluateString(
+    final evaluated = await _rules.evaluateString(
       document,
       context,
       tocRule,
-      resolveUrl: true,
+      resolveUrl: false,
       jsVariables: vars,
+      sourceUrl: source.url,
     );
+    // Legado 语义：tocUrl 求值为空或 `-` 表示目录页即书籍详情页。
+    // 此前无此回退，目录规则求空后直接请求空地址，报 404。
+    if (evaluated.isEmpty || evaluated.trim() == '-') return bookId;
+    // 求值结果可能仍是 URL 模板（@get:{}/{{}}/相对路径），统一展开。
+    final expanded = await _expandTemplate(
+      evaluated.trim(),
+      const {},
+      response.finalUri,
+      source: source,
+    );
+    final resolved = response.finalUri.resolve(expanded);
+    if (resolved.scheme != 'http' && resolved.scheme != 'https') {
+      return bookId;
+    }
+    return resolved.toString();
   }
 
   Future<BookSourceBook?> _bookFromRules(
@@ -418,20 +494,43 @@ class LegadoRuntime {
     Object? context,
     Map<String, dynamic> rule, {
     Map<String, Object?> vars = const {},
+    String sourceUrl = '',
   }) async {
-    final title = await _value(document, context, rule, 'name', jsVariables: vars);
-    final url = await _url(document, context, rule, 'bookUrl', jsVariables: vars);
+    final title = await _value(
+      document,
+      context,
+      rule,
+      'name',
+      jsVariables: vars,
+      sourceUrl: sourceUrl,
+    );
+    final url = await _url(
+      document,
+      context,
+      rule,
+      'bookUrl',
+      jsVariables: vars,
+      sourceUrl: sourceUrl,
+    );
     if (title.isEmpty || url.isEmpty) return null;
     return BookSourceBook(
       id: url,
       title: title,
-      author: await _value(document, context, rule, 'author', jsVariables: vars),
+      author: await _value(
+        document,
+        context,
+        rule,
+        'author',
+        jsVariables: vars,
+        sourceUrl: sourceUrl,
+      ),
       description: await _value(
         document,
         context,
         rule,
         'intro',
         jsVariables: vars,
+        sourceUrl: sourceUrl,
       ),
       coverUrl: await _uriValue(
         document,
@@ -439,12 +538,27 @@ class LegadoRuntime {
         rule,
         'coverUrl',
         vars: vars,
+        sourceUrl: sourceUrl,
       ),
       categories: _splitCategories(
-        await _value(document, context, rule, 'kind', jsVariables: vars),
+        await _value(
+          document,
+          context,
+          rule,
+          'kind',
+          jsVariables: vars,
+          sourceUrl: sourceUrl,
+        ),
       ),
       latestChapter: _nullable(
-        await _value(document, context, rule, 'lastChapter', jsVariables: vars),
+        await _value(
+          document,
+          context,
+          rule,
+          'lastChapter',
+          jsVariables: vars,
+          sourceUrl: sourceUrl,
+        ),
       ),
     );
   }
@@ -458,6 +572,7 @@ class LegadoRuntime {
       template,
       variables,
       source.baseUri,
+      source: source,
     );
     return _transport.send(
       LegadoRequestTemplate.parse(
@@ -469,21 +584,24 @@ class LegadoRuntime {
     );
   }
 
-  /// 展开 URL 模板：`@js:`/`<js>` 脚本段与内置变量静态替换，剩余
-  /// `{{}}` 表达式走 JS。JS 引擎不可用时脚本段保持原样，由请求
-  /// 解析器给出可诊断错误（这类源会被导入校验标记为不可运行）。
+  /// 展开 URL 模板：`@get:{}` 变量、`@js:`/`<js>` 脚本段、内置变量
+  /// 静态替换，剩余 `{{}}` 表达式走 JS。JS 引擎不可用时脚本段保持原样，
+  /// 由请求解析器给出可诊断错误（这类源会被导入校验标记为不可运行）。
   Future<String> _expandTemplate(
     String template,
     Map<String, String> variables,
-    Uri baseUri,
-  ) async {
+    Uri baseUri, {
+    LegadoBookSource? source,
+  }) async {
     var working = template.trim();
+    final sourceUrl = source?.url ?? '';
     final jsVariables = {
       'key': variables['key'] ?? '',
       'page': variables['page'] ?? '',
       'baseUrl': baseUri.toString(),
       'host': baseUri.host,
       'title': variables['title'] ?? '',
+      'prelude': source == null ? '' : _stringOrEmpty(source.raw['jsLib']),
     };
 
     // `@js:` 前缀：整个地址是一条 JS 语句，求值结果即 URL。
@@ -494,6 +612,8 @@ class LegadoRuntime {
           final value = await engine.evaluateExpression(
             working.substring(4),
             jsVariables,
+            prelude: '${jsVariables['prelude']}',
+            sourceUrl: sourceUrl,
           );
           if (value.trim().isNotEmpty) working = value.trim();
         } catch (_) {
@@ -512,6 +632,7 @@ class LegadoRuntime {
             final value = await engine.evaluateExpression(
               match.group(1)!,
               jsVariables,
+              sourceUrl: sourceUrl,
             );
             if (value.isNotEmpty) {
               working = working.replaceAll(match.group(0)!, value);
@@ -521,6 +642,15 @@ class LegadoRuntime {
           }
         }
       }
+    }
+
+    // 变量池展开：`@get:{name}` 从按源隔离的跨请求变量池取值。
+    // 未命中保持原样，由请求解析器给出可诊断错误。
+    if (sourceUrl.isNotEmpty && working.contains('@get:')) {
+      working = LegadoVariableSyntax.expandGetsStrict(
+        working,
+        (name) => LegadoVariableStore.instance.get(sourceUrl, name),
+      );
     }
 
     if (!working.contains('{{')) return working;
@@ -545,6 +675,7 @@ class LegadoRuntime {
         final value = await engine.evaluateExpression(
           expression,
           jsVariables,
+          sourceUrl: sourceUrl,
         );
         if (value.isNotEmpty) {
           expanded = expanded.replaceAll(match.group(0)!, value);
@@ -592,6 +723,7 @@ class LegadoRuntime {
           final evaluated = await engine.evaluateExpression(
             '($raw)',
             {'baseUrl': source.baseUri.toString()},
+            sourceUrl: source.url,
           );
           decoded = jsonDecode(evaluated);
         } catch (_) {
@@ -653,6 +785,7 @@ class LegadoRuntime {
       source.searchUrl,
       const {'key': 'preflight', 'page': '1'},
       source.baseUri,
+      source: source,
     );
     LegadoRequestTemplate.parse(
       expandedSearch,
@@ -669,6 +802,7 @@ class LegadoRuntime {
     String key, {
     bool required = false,
     Map<String, Object?> jsVariables = const {},
+    String sourceUrl = '',
   }) async {
     final rule = required
         ? _requiredRule(rules, key)
@@ -679,6 +813,7 @@ class LegadoRuntime {
       context,
       rule,
       jsVariables: jsVariables,
+      sourceUrl: sourceUrl,
     );
   }
 
@@ -688,6 +823,7 @@ class LegadoRuntime {
     Map<String, dynamic> rules,
     String key, {
     Map<String, Object?> jsVariables = const {},
+    String sourceUrl = '',
   }) async {
     final rule = _optionalRule(rules, key);
     if (rule.isEmpty) return '';
@@ -697,6 +833,7 @@ class LegadoRuntime {
       rule,
       resolveUrl: true,
       jsVariables: jsVariables,
+      sourceUrl: sourceUrl,
     );
   }
 
@@ -706,8 +843,16 @@ class LegadoRuntime {
     Map<String, dynamic> rules,
     String key, {
     Map<String, Object?> vars = const {},
+    String sourceUrl = '',
   }) async {
-    final value = await _url(document, context, rules, key, jsVariables: vars);
+    final value = await _url(
+      document,
+      context,
+      rules,
+      key,
+      jsVariables: vars,
+      sourceUrl: sourceUrl,
+    );
     return value.isEmpty ? null : Uri.tryParse(value);
   }
 }
