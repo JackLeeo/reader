@@ -1,0 +1,652 @@
+// 文件说明：Legado 规则引擎，支持 CSS/JSONPath/XPath/JS/正则全类型规则
+// 求值。异步 API：JS 段与 {{}} 模板经由 QuickJS 桥求值。
+// 技术要点：HTML DOM、JSONPath、XPath、QuickJS。
+
+import 'dart:convert';
+
+import 'package:html/dom.dart';
+import 'package:html/parser.dart' as html_parser;
+
+import '../protocol/book_source_protocol.dart';
+import 'legado_js_engine.dart';
+import 'legado_jsonpath.dart';
+import 'legado_xpath.dart';
+
+class LegadoRuleDocument {
+  LegadoRuleDocument._({required this.value, required this.baseUri});
+
+  factory LegadoRuleDocument.parse(String body, Uri baseUri) {
+    final trimmed = body.trimLeft();
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+      try {
+        return LegadoRuleDocument._(value: jsonDecode(body), baseUri: baseUri);
+      } on FormatException {
+        // Some HTML pages begin with text resembling JSON. Parse them as HTML.
+      }
+    }
+    return LegadoRuleDocument._(
+      value: html_parser.parse(body),
+      baseUri: baseUri,
+    );
+  }
+
+  final Object? value;
+  final Uri baseUri;
+}
+
+class LegadoRuleEngine {
+  const LegadoRuleEngine();
+
+  static final LegadoJsonPath _jsonPathEvaluator = const LegadoJsonPath();
+  static final LegadoXPath _xpathEvaluator = const LegadoXPath();
+
+  /// 兼容保留：JS/XPath/JSONPath 已由引擎原生支持，不再静态拦截。
+  static void ensureSupported(String rule, {required String field}) {}
+
+  Future<List<Object?>> evaluateList(
+    LegadoRuleDocument document,
+    Object? context,
+    String rule, {
+    Map<String, Object?> jsVariables = const {},
+  }) async {
+    final transformed = _splitTransform(rule);
+    if (transformed.selector.trimLeft().startsWith(':')) {
+      return _evaluateRegexList(document, context, transformed.selector);
+    }
+    final values = await _evaluateAlternatives(
+      document,
+      context,
+      transformed.selector,
+      listMode: true,
+      jsVariables: jsVariables,
+    );
+    return values.where((value) => value != null).toList(growable: false);
+  }
+
+  List<Object?> _evaluateRegexList(
+    LegadoRuleDocument document,
+    Object? context,
+    String selector,
+  ) {
+    final stages = selector.trimLeft().substring(1).split('&&');
+    var inputs = <String>[_rawString(context ?? document.value)];
+    List<_RegexRuleContext> matches = const [];
+    try {
+      for (final stage in stages) {
+        final pattern = RegExp(stage, multiLine: true, dotAll: true);
+        matches = [
+          for (final input in inputs)
+            for (final match in pattern.allMatches(input))
+              _RegexRuleContext(match),
+        ];
+        inputs = matches.map((match) => match.fullMatch).toList();
+        if (inputs.isEmpty) break;
+      }
+    } on FormatException {
+      throw const BookSourceProtocolException(
+        'Legado list rule contains an invalid regular expression.',
+      );
+    }
+    return matches;
+  }
+
+  Future<String> evaluateString(
+    LegadoRuleDocument document,
+    Object? context,
+    String rule, {
+    bool resolveUrl = false,
+    Map<String, Object?> jsVariables = const {},
+  }) async {
+    final transformed = _splitTransform(rule);
+    final selected = transformed.selector.trim().isEmpty
+        ? _rawValues(document, context)
+        : await _evaluateAlternatives(
+            document,
+            context,
+            transformed.selector,
+            listMode: false,
+            jsVariables: jsVariables,
+          );
+    final values = selected
+        .map(_stringValue)
+        .where((value) => value.isNotEmpty)
+        .toList();
+    var result = values.join();
+    if (transformed.pattern != null) {
+      try {
+        final pattern = RegExp(
+          transformed.pattern!,
+          multiLine: true,
+          dotAll: true,
+        );
+        result =
+            transformed.selector.trim().isEmpty &&
+                transformed.replacement.isNotEmpty
+            ? _extractRegex(result, pattern, transformed.replacement)
+            : _replaceRegex(result, pattern, transformed.replacement);
+      } on FormatException {
+        throw const BookSourceProtocolException(
+          'Legado rule contains an invalid regular expression.',
+        );
+      }
+    }
+    result = result.trim();
+    if (resolveUrl && result.isNotEmpty) {
+      final uri = document.baseUri.resolve(result);
+      if (uri.scheme != 'http' && uri.scheme != 'https') {
+        throw const BookSourceProtocolException(
+          'Legado rule produced a non-HTTP URL.',
+        );
+      }
+      return uri.toString();
+    }
+    return result;
+  }
+
+  String applyReplaceRule(String input, String rule) {
+    if (rule.trim().isEmpty) return input;
+    final transformed = _splitTransform(
+      rule.trim().startsWith('##') ? rule : '##$rule',
+    );
+    if (transformed.pattern == null) return input;
+    try {
+      return _replaceRegex(
+        input,
+        RegExp(transformed.pattern!, multiLine: true, dotAll: true),
+        transformed.replacement,
+      );
+    } on FormatException {
+      throw const BookSourceProtocolException(
+        'Legado replacement contains an invalid regular expression.',
+      );
+    }
+  }
+
+  Future<List<Object?>> _evaluateAlternatives(
+    LegadoRuleDocument document,
+    Object? context,
+    String selector, {
+    required bool listMode,
+    Map<String, Object?> jsVariables = const {},
+  }) async {
+    for (final fallback in selector.split('||')) {
+      final concatenated = <Object?>[];
+      for (final part in fallback.split('&&')) {
+        concatenated.addAll(
+          await _evaluateSingle(
+            document,
+            context,
+            part.trim(),
+            listMode: listMode,
+            jsVariables: jsVariables,
+          ),
+        );
+      }
+      if (concatenated.any((value) => _stringValue(value).isNotEmpty)) {
+        if (listMode && concatenated.isNotEmpty) return concatenated;
+        return concatenated;
+      }
+    }
+    return const [];
+  }
+
+  Future<List<Object?>> _evaluateSingle(
+    LegadoRuleDocument document,
+    Object? context,
+    String rule, {
+    required bool listMode,
+    Map<String, Object?> jsVariables = const {},
+  }) async {
+    var normalized = rule.trim();
+    if (normalized.startsWith('+')) {
+      normalized = normalized.substring(1).trimLeft();
+    }
+    if (normalized.toLowerCase().startsWith('@css:')) {
+      normalized = normalized.substring(5).trimLeft();
+    }
+    if (normalized.toLowerCase().startsWith('@xpath:')) {
+      normalized = normalized.substring(7).trimLeft();
+    }
+    if (normalized.isEmpty) return const [];
+    final root = context ?? document.value;
+
+    // XPath 规则（// 开头）。
+    if (normalized.startsWith('//')) {
+      return _evaluateXPath(root, normalized);
+    }
+    // 整条规则为 JS（@js: 前缀或 <js> 块）。
+    if (normalized.toLowerCase().startsWith('@js:') ||
+        normalized.startsWith('<js>')) {
+      return [
+        await _evaluateJsRule(normalized, document, root, jsVariables),
+      ];
+    }
+
+    if (root is _RegexRuleContext) {
+      return [root.expand(normalized)];
+    }
+    if (normalized.contains('{{')) {
+      return [await _interpolate(normalized, root, document, jsVariables)];
+    }
+    if ((normalized.startsWith('"') && normalized.endsWith('"')) ||
+        (normalized.startsWith("'") && normalized.endsWith("'"))) {
+      return [normalized.substring(1, normalized.length - 1)];
+    }
+    final normalizedRule = normalized.toLowerCase().startsWith('@json:')
+        ? normalized.substring(6)
+        : normalized;
+    if (root is Map || root is List || normalizedRule.startsWith(r'$')) {
+      return _jsonPathEvaluator.evaluate(root, normalizedRule);
+    }
+    final nodes = <Element>[];
+    if (root is Document) {
+      nodes.add(root.documentElement!);
+    } else if (root is Element) {
+      nodes.add(root);
+    } else {
+      return [root];
+    }
+    return _htmlRule(
+      nodes,
+      normalized,
+      listMode: listMode,
+      document: document,
+      jsVariables: jsVariables,
+    );
+  }
+
+  List<Object?> _evaluateXPath(Object? root, String expression) {
+    final roots = <Element>[];
+    if (root is Document) {
+      final element = root.documentElement;
+      if (element != null) roots.add(element);
+    } else if (root is Element) {
+      roots.add(root);
+    } else if (root is List) {
+      roots.addAll(root.whereType<Element>());
+    }
+    return _xpathEvaluator.evaluate(roots, expression);
+  }
+
+  Future<String> _evaluateJsRule(
+    String rule,
+    LegadoRuleDocument document,
+    Object? root,
+    Map<String, Object?> jsVariables,
+  ) async {
+    var code = rule;
+    if (code.toLowerCase().startsWith('@js:')) {
+      code = code.substring(4);
+    } else {
+      final block = RegExp(r'^<js>([\s\S]*?)</js>').firstMatch(code);
+      if (block != null) {
+        code = block.group(1)!;
+      }
+    }
+    final engine = LegadoJsEngine.instance;
+    if (engine == null) {
+      throw const BookSourceProtocolException(
+        'This source needs scripting, but the JS engine is unavailable.',
+      );
+    }
+    final prelude = jsVariables['prelude'];
+    try {
+      return await engine.evaluateScript(
+        code,
+        {
+          ..._baseJsVariables(document, root),
+          ...jsVariables,
+        },
+        prelude: prelude is String ? prelude : '',
+      );
+    } on LegadoJsException catch (error) {
+      throw BookSourceProtocolException(error.message);
+    }
+  }
+
+  Map<String, Object?> _baseJsVariables(
+    LegadoRuleDocument document,
+    Object? root,
+  ) {
+    return {
+      'result': _rawString(root ?? document.value),
+      'src': _rawString(root ?? document.value),
+      'baseUrl': document.baseUri.toString(),
+      'host': document.baseUri.host,
+      'title': '',
+    };
+  }
+
+  Future<List<Object?>> _htmlRule(
+    List<Element> roots,
+    String rule, {
+    required bool listMode,
+    required LegadoRuleDocument document,
+    Map<String, Object?> jsVariables = const {},
+  }) async {
+    final segments = rule.split('@').where((part) => part.isNotEmpty).toList();
+    if (segments.isEmpty) return roots;
+    var current = roots;
+    for (var index = 0; index < segments.length; index++) {
+      var segment = segments[index].trim();
+      // js:/<js> 段：把前面段的累积文本作为 result 交给脚本。
+      if (segment.toLowerCase().startsWith('js:') ||
+          segment.startsWith('<js>')) {
+        final resultText = current.map(_stringValue).join();
+        return [
+          await _evaluateJsRule(
+            segment,
+            document,
+            resultText,
+            jsVariables,
+          ),
+        ];
+      }
+      final terminal = _terminalValue(current, segment);
+      if (terminal != null && index == segments.length - 1) return terminal;
+      current = _select(current, segment, includeRoots: index == 0);
+      if (current.isEmpty) return const [];
+    }
+    return listMode ? current : current.map((node) => node.text).toList();
+  }
+
+  List<Object?>? _terminalValue(List<Element> nodes, String segment) {
+    return switch (segment) {
+      'text' => nodes.map((node) => node.text).toList(),
+      'ownText' || 'textNodes' => nodes.map(_ownText).toList(),
+      'html' => nodes.map((node) => node.innerHtml).toList(),
+      _
+          when _htmlAttributeNames.contains(segment.toLowerCase()) ||
+              nodes.any((node) => node.attributes.containsKey(segment)) =>
+        nodes.map((node) => node.attributes[segment] ?? '').toList(),
+      _ => null,
+    };
+  }
+
+  List<Element> _select(
+    List<Element> roots,
+    String raw, {
+    required bool includeRoots,
+  }) {
+    final parsed = _legacySelector(raw);
+    final selected = <Element>[];
+    for (final root in roots) {
+      if (parsed.text != null) {
+        final candidates = <Element>[root, ...root.querySelectorAll('*')];
+        final exact = candidates
+            .where((element) => element.text.trim() == parsed.text)
+            .toList();
+        selected.addAll(
+          exact.isNotEmpty
+              ? exact
+              : candidates.where(
+                  (element) => element.text.contains(parsed.text!),
+                ),
+        );
+      } else {
+        try {
+          if (includeRoots && _matches(root, parsed.css)) selected.add(root);
+          selected.addAll(root.querySelectorAll(parsed.css));
+        } on FormatException {
+          throw BookSourceProtocolException(
+            'Unsupported Legado CSS selector: ${parsed.css}.',
+          );
+        }
+      }
+    }
+    final deduped = selected.toSet().toList();
+    if (parsed.exclude != null) {
+      final excluded = _normalizedIndex(parsed.exclude!, deduped.length);
+      if (excluded >= 0 && excluded < deduped.length) {
+        deduped.removeAt(excluded);
+      }
+    }
+    if (parsed.indexes == null) return deduped;
+    return parsed.indexes!
+        .map((value) => _normalizedIndex(value, deduped.length))
+        .where((value) => value >= 0 && value < deduped.length)
+        .map((value) => deduped[value])
+        .toList();
+  }
+
+  _LegacySelector _legacySelector(String input) {
+    var selector = input.trim();
+    int? exclude;
+    final exclusion = RegExp(r'!(-?\d+)$').firstMatch(selector);
+    if (exclusion != null) {
+      exclude = int.parse(exclusion.group(1)!);
+      selector = selector.substring(0, exclusion.start);
+    }
+    List<int>? indexes;
+    final indexMatch = RegExp(r'\.(-?\d+(?::-?\d+)*)$').firstMatch(selector);
+    if (indexMatch != null) {
+      indexes = indexMatch.group(1)!.split(':').map(int.parse).toList();
+      selector = selector.substring(0, indexMatch.start);
+    }
+    String? text;
+    if (selector.startsWith('class.')) {
+      selector = '.${selector.substring(6)}';
+    } else if (selector.startsWith('id.')) {
+      selector = '#${selector.substring(3)}';
+    } else if (selector.startsWith('tag.')) {
+      selector = selector.substring(4);
+    } else if (selector.startsWith('text.')) {
+      text = selector.substring(5);
+      selector = '*';
+    }
+    if (selector.isEmpty) selector = '*';
+    return _LegacySelector(
+      css: selector,
+      indexes: indexes,
+      exclude: exclude,
+      text: text,
+    );
+  }
+
+  Future<String> _interpolate(
+    String template,
+    Object? context,
+    LegadoRuleDocument doc,
+    Map<String, Object?> jsVariables,
+  ) async {
+    final matches = RegExp(r'\{\{\s*([^{}]+?)\s*\}\}').allMatches(template);
+    var result = template;
+    for (final match in matches) {
+      final expression = match.group(1)!.trim();
+      String replacement = '';
+      if ((expression.startsWith('"') && expression.endsWith('"')) ||
+          (expression.startsWith("'") && expression.endsWith("'"))) {
+        replacement = expression.substring(1, expression.length - 1);
+      } else if (_isPlainPathExpression(expression)) {
+        // 纯路径（book.title / $.data.list / key）优先 JSONPath。
+        replacement = _jsonPathEvaluator
+            .evaluate(context, expression)
+            .map(_stringValue)
+            .join();
+        if (replacement.isEmpty) {
+          replacement = await _tryJsExpression(
+            expression,
+            doc,
+            context,
+            jsVariables,
+          );
+        }
+      } else {
+        // 含函数调用/运算/桥 API 的表达式走 JS。
+        replacement = await _tryJsExpression(
+          expression,
+          doc,
+          context,
+          jsVariables,
+        );
+        if (replacement.isEmpty) {
+          replacement = _jsonPathEvaluator
+              .evaluate(context, expression)
+              .map(_stringValue)
+              .join();
+        }
+      }
+      result = result.replaceAll(
+        match.group(0)!,
+        replacement,
+      );
+    }
+    return result;
+  }
+
+  /// 形如 `book.title`、`$.data.list`、`key`、`page` 的纯成员访问。
+  static final _plainPath = RegExp(r'''^[A-Za-z_$][\w$]*(\[['"\w$]+'\])?([.][A-Za-z_$][\w$]*)*$''');
+
+  bool _isPlainPathExpression(String expression) =>
+      _plainPath.hasMatch(expression);
+
+  Future<String> _tryJsExpression(
+    String expression,
+    LegadoRuleDocument doc,
+    Object? context,
+    Map<String, Object?> jsVariables,
+  ) async {
+    final engine = LegadoJsEngine.instance;
+    if (engine == null) return '';
+    final prelude = jsVariables['prelude'];
+    try {
+      return await engine.evaluateExpression(
+        expression,
+        {
+          ..._baseJsVariables(doc, context),
+          ...jsVariables,
+        },
+        prelude: prelude is String ? prelude : '',
+      );
+    } catch (_) {
+      return '';
+    }
+  }
+
+  List<Object?> _rawValues(LegadoRuleDocument document, Object? context) {
+    final value = context ?? document.value;
+    return switch (value) {
+      Document document => [document.outerHtml],
+      Element element => [element.outerHtml],
+      _ => [value],
+    };
+  }
+}
+
+const _htmlAttributeNames = {
+  'href',
+  'src',
+  'content',
+  'value',
+  'title',
+  'alt',
+  'data',
+  'action',
+};
+
+class _RuleTransform {
+  const _RuleTransform({
+    required this.selector,
+    this.pattern,
+    this.replacement = '',
+  });
+
+  final String selector;
+  final String? pattern;
+  final String replacement;
+}
+
+_RuleTransform _splitTransform(String rule) {
+  final parts = rule.split('##');
+  if (parts.length == 1) return _RuleTransform(selector: rule);
+  return _RuleTransform(
+    selector: parts.first,
+    pattern: parts.length > 1 ? parts[1] : null,
+    replacement: parts.length > 2
+        ? parts[2].replaceFirst(RegExp(r'###$'), '')
+        : '',
+  );
+}
+
+class _LegacySelector {
+  const _LegacySelector({
+    required this.css,
+    this.indexes,
+    this.exclude,
+    this.text,
+  });
+
+  final String css;
+  final List<int>? indexes;
+  final int? exclude;
+  final String? text;
+}
+
+int _normalizedIndex(int index, int length) =>
+    index < 0 ? length + index : index;
+
+String _ownText(Element element) =>
+    element.nodes.whereType<Text>().map((node) => node.data).join().trim();
+
+bool _matches(Element element, String selector) {
+  final parent = element.parent;
+  if (parent != null) {
+    return parent.querySelectorAll(selector).contains(element);
+  }
+  return selector == '*' || selector == element.localName;
+}
+
+String _stringValue(Object? value) => switch (value) {
+  null => '',
+  String text => text,
+  num number => '$number',
+  bool boolean => '$boolean',
+  Element element => element.text,
+  _RegexRuleContext match => match.fullMatch,
+  _ => '$value',
+};
+
+String _rawString(Object? value) => switch (value) {
+  Document document => document.outerHtml,
+  Element element => element.outerHtml,
+  _RegexRuleContext match => match.fullMatch,
+  null => '',
+  _ => '$value',
+};
+
+class _RegexRuleContext {
+  _RegexRuleContext(RegExpMatch match)
+    : fullMatch = match.group(0) ?? '',
+      groups = List.generate(match.groupCount + 1, match.group);
+
+  final String fullMatch;
+  final List<String?> groups;
+
+  String expand(String template) {
+    return template.replaceAllMapped(RegExp(r'\$(\d+)'), (capture) {
+      final index = int.tryParse(capture.group(1)!);
+      if (index == null || index >= groups.length) return capture.group(0)!;
+      return groups[index] ?? '';
+    });
+  }
+}
+
+String _replaceRegex(String input, RegExp pattern, String replacement) {
+  return input.replaceAllMapped(pattern, (match) {
+    return replacement.replaceAllMapped(RegExp(r'\$(\d+)'), (capture) {
+      final index = int.tryParse(capture.group(1)!);
+      if (index == null || index > match.groupCount) return capture.group(0)!;
+      return match.group(index) ?? '';
+    });
+  });
+}
+
+String _extractRegex(String input, RegExp pattern, String replacement) {
+  final match = pattern.firstMatch(input);
+  if (match == null) return '';
+  return replacement.replaceAllMapped(RegExp(r'\$(\d+)'), (capture) {
+    final index = int.tryParse(capture.group(1)!);
+    if (index == null || index > match.groupCount) return capture.group(0)!;
+    return match.group(index) ?? '';
+  });
+}

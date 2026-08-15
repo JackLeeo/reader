@@ -1,0 +1,119 @@
+name: iOS TrollStore IPA
+
+# 产出可直接用 TrollStore 安装的 IPA：
+# flutter build ios --release --no-codesign → ldid 伪签名 → 打包 Payload。
+# 手动触发（Actions → iOS TrollStore IPA → Run workflow），或推 v* 标签时自动构建并附到 Release。
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-trollstore-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  FLUTTER_VERSION: "3.44.4"
+
+jobs:
+  build:
+    name: Build TrollStore IPA
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Resolve dependencies
+        run: flutter pub get --enforce-lockfile
+
+      - name: Generate localizations
+        run: flutter gen-l10n
+
+      - name: Build iOS release without code signing
+        run: flutter build ios --release --no-codesign
+
+      - name: Install ldid
+        run: brew install ldid
+
+      - name: Fakesign and package TrollStore IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version:[[:space:]]*\([^+[:space:]]*\).*/\1/p' pubspec.yaml)"
+          app_path="$(
+            find build/ios/iphoneos -maxdepth 1 -type d -name '*.app' -print -quit
+          )"
+          if [[ -z "$app_path" || ! -f "$app_path/Info.plist" ]]; then
+            echo "::error::The unsigned iOS application was not produced."
+            exit 1
+          fi
+          if [[ -d "$app_path/_CodeSignature" ]] \
+            || [[ -f "$app_path/embedded.mobileprovision" ]]; then
+            echo "::error::The iOS application unexpectedly contains signing material."
+            exit 1
+          fi
+
+          # TrollStore 走 CoreTrust 漏洞安装，用 ldid 伪签名全部 Mach-O
+          # （主二进制、Flutter framework、插件 dylib）。
+          signed=0
+          while IFS= read -r -d '' binary; do
+            ldid -S "$binary"
+            signed=$((signed + 1))
+          done < <(
+            find "$app_path" -type f -print0 \
+              | xargs -0 file \
+              | grep -E 'Mach-O (64-bit|universal)' \
+              | cut -d: -f1 \
+              | tr '\n' '\0'
+          )
+          echo "Fakesigned ${signed} Mach-O binaries."
+          if (( signed == 0 )); then
+            echo "::error::No Mach-O binaries were found to sign."
+            exit 1
+          fi
+
+          staging_dir="$(mktemp -d "${RUNNER_TEMP}/trollstore-ipa.XXXXXX")"
+          mkdir -p "$staging_dir/Payload"
+          cp -R "$app_path" "$staging_dir/Payload/"
+          ipa_name="xxread-iOS-trollstore-${version}.ipa"
+          (
+            cd "$staging_dir"
+            /usr/bin/zip -qry "$GITHUB_WORKSPACE/${ipa_name}" Payload
+          )
+          unzip -tq "$ipa_name"
+          mkdir -p release-assets
+          mv "$ipa_name" release-assets/
+
+      - name: Upload TrollStore IPA artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ios-trollstore-ipa
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Attach IPA to GitHub Release (tag builds)
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create "$GITHUB_REF_NAME" release-assets/* \
+            --title "xxread $GITHUB_REF_NAME" \
+            --notes "iOS TrollStore IPA built from $GITHUB_REF_NAME. 用 TrollStore 打开 ipa 安装。" \
+            --latest || \
+          gh release upload "$GITHUB_REF_NAME" release-assets/* --clobber
