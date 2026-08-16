@@ -40,6 +40,7 @@ import 'package:xxread/reader_core/ai/ai_service.dart';
 import 'package:xxread/services/books/book_note_dao.dart';
 import 'package:xxread/services/books/bookmark_dao.dart';
 import 'package:xxread/services/core/app_settings_service.dart';
+import 'package:xxread/services/core/source_diagnostic_logger.dart';
 import 'package:xxread/services/reading/reading_resume_service.dart';
 import 'package:xxread/services/reading/reading_stats_dao.dart';
 import 'package:xxread/services/tts_service.dart';
@@ -1126,6 +1127,36 @@ class _BookSourceReaderPageState extends State<BookSourceReaderPage>
     if (_annotationInteractionActive) return;
     _controlsTimer?.cancel();
     setState(() => _controlsVisible = !_controlsVisible);
+  }
+
+  Future<void> _exportDiagnosticLog() async {
+    final logger = SourceDiagnosticLogger.instance;
+    if (logger.entries.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('暂无诊断日志记录')),
+      );
+      return;
+    }
+    try {
+      final path = await logger.exportToFile(
+        sourceId: widget.source.id,
+      );
+      if (!mounted) return;
+      if (path != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('诊断日志已保存：\n$path'),
+            duration: const Duration(seconds: 6),
+          ),
+        );
+      }
+    } on Object catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('导出失败：$e')),
+      );
+    }
   }
 
   Future<void> _requestExit() async {
@@ -2420,6 +2451,8 @@ class _BookSourceReaderPageState extends State<BookSourceReaderPage>
                               ? null
                               : () => unawaited(_showSwitchSource()),
                           switchSourceTooltip: context.l10n.readerSwitchSource,
+                          onDiagnosticLog: _exportDiagnosticLog,
+                          diagnosticLogTooltip: '导出诊断日志',
                           backTooltip: MaterialLocalizations.of(
                             context,
                           ).backButtonTooltip,
@@ -2572,6 +2605,12 @@ class _BookSourceReaderPageState extends State<BookSourceReaderPage>
                     ? _initialize
                     : () => _loadChapter(_chapterIndex, saveCurrent: false),
                 child: Text(context.l10n.retry),
+              ),
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                onPressed: _exportDiagnosticLog,
+                icon: const Icon(Icons.bug_report_outlined, size: 18),
+                label: const Text('导出诊断日志'),
               ),
             ],
           ),

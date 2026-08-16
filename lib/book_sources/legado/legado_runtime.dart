@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:crypto/crypto.dart';
 
 import '../../core/reader/chapter_heading_library.dart';
+import '../../services/core/source_diagnostic_logger.dart';
 import '../models/registered_book_source.dart';
 import '../protocol/book_source_protocol.dart';
 import 'legado_book_source.dart';
@@ -21,6 +22,24 @@ class LegadoRuntime {
 
   final LegadoTransport _transport;
   final LegadoRuleEngine _rules = const LegadoRuleEngine();
+
+  /// 诊断日志快捷方法。
+  void _log(
+    LegadoBookSource source,
+    SourceDiagOp op,
+    SourceDiagLevel level,
+    String message, {
+    String? details,
+  }) {
+    SourceDiagnosticLogger.instance.log(
+      sourceId: source.stableId,
+      sourceName: source.name,
+      op: op,
+      level: level,
+      message: message,
+      details: details,
+    );
+  }
 
   /// 详情页响应短期缓存：getBook 与 getChapters(_tocUrl) 共享，
   /// 避免同一 bookId 在一次阅读流程里被请求两次。
@@ -44,37 +63,70 @@ class LegadoRuntime {
     final source = _source(registered);
     await _ensureSearchRunnable(source);
     final vars = _jsVariables(source, {'key': query.trim(), 'page': '$page'});
-    final response = await _request(
-      source,
-      source.searchUrl,
-      variables: {'key': query.trim(), 'page': '$page'},
-    );
-    final document = LegadoRuleDocument.parse(response.body, response.finalUri);
-    final rule = source.rule('ruleSearch');
-    final contexts = await _rules.evaluateList(
-      document,
-      null,
-      _requiredRule(rule, 'bookList'),
-      jsVariables: vars,
-      sourceUrl: source.url,
-    );
-    final books = <BookSourceBook>[];
-    for (final context in contexts.take(_maxSearchItems)) {
-      final book = await _bookFromRules(
+    try {
+      final response = await _request(
+        source,
+        source.searchUrl,
+        variables: {'key': query.trim(), 'page': '$page'},
+      );
+      final document = LegadoRuleDocument.parse(
+        response.body,
+        response.finalUri,
+      );
+      final rule = source.rule('ruleSearch');
+      final contexts = await _rules.evaluateList(
         document,
-        context,
-        rule,
-        vars: vars,
+        null,
+        _requiredRule(rule, 'bookList'),
+        jsVariables: vars,
         sourceUrl: source.url,
       );
-      if (book != null) books.add(book);
+      final books = <BookSourceBook>[];
+      for (final context in contexts.take(_maxSearchItems)) {
+        final book = await _bookFromRules(
+          document,
+          context,
+          rule,
+          vars: vars,
+          sourceUrl: source.url,
+        );
+        if (book != null) books.add(book);
+      }
+      _log(
+        source,
+        SourceDiagOp.search,
+        books.isEmpty ? SourceDiagLevel.warn : SourceDiagLevel.info,
+        'search("$query") page=$page → ${books.length} books '
+        '(ruleHits=${contexts.length})',
+        details: books.isEmpty
+            ? 'searchUrl=${source.searchUrl}\n'
+                  'finalUri=${response.finalUri}\n'
+                  'bodySnippet=${response.body.length > 200 ? '${response.body.substring(0, 200)}...' : response.body}'
+            : null,
+      );
+      return BookSourceSearchPage(
+        items: books.take(pageSize).toList(growable: false),
+        page: page,
+        pageSize: pageSize,
+        hasMore: books.length > pageSize,
+      );
+    } on BookSourceProtocolException catch (e) {
+      _log(
+        source,
+        SourceDiagOp.search,
+        SourceDiagLevel.error,
+        'search("$query") failed: ${e.message}',
+      );
+      rethrow;
+    } on Object catch (e) {
+      _log(
+        source,
+        SourceDiagOp.search,
+        SourceDiagLevel.error,
+        'search("$query") unexpected error: $e',
+      );
+      rethrow;
     }
-    return BookSourceSearchPage(
-      items: books.take(pageSize).toList(growable: false),
-      page: page,
-      pageSize: pageSize,
-      hasMore: books.length > pageSize,
-    );
   }
 
   /// 发现页聚合入口：取源的第一个发现分类作为推荐书架。
@@ -196,96 +248,128 @@ class LegadoRuntime {
     final source = _source(registered);
     await _ensureRunnable(source);
     final vars = _jsVariables(source);
-    // 详情页优先读短期缓存：详情页 UI 已抓过一次的场景（点击进阅读）
-    // 不能再次真实请求——一次性 token / 防盗链站点第二次会 403/404。
-    final cached = _cachedDetailPage(bookId);
-    final response = cached ?? await _request(source, bookId);
-    if (cached == null) {
-      _cacheDetailPage(bookId, response);
-    }
-    final document = LegadoRuleDocument.parse(response.body, response.finalUri);
-    final rule = source.rule('ruleBookInfo');
-    final init = _optionalRule(rule, 'init');
-    final context = init.isEmpty
-        ? null
-        : (await _rules.evaluateList(
+    try {
+      // 详情页优先读短期缓存：详情页 UI 已抓过一次的场景（点击进阅读）
+      // 不能再次真实请求——一次性 token / 防盗链站点第二次会 403/404。
+      final cached = _cachedDetailPage(bookId);
+      final response = cached ?? await _request(source, bookId);
+      if (cached == null) {
+        _cacheDetailPage(bookId, response);
+      }
+      final document = LegadoRuleDocument.parse(
+        response.body,
+        response.finalUri,
+      );
+      final rule = source.rule('ruleBookInfo');
+      final init = _optionalRule(rule, 'init');
+      final context = init.isEmpty
+          ? null
+          : (await _rules.evaluateList(
+              document,
+              null,
+              init,
+              jsVariables: vars,
+              sourceUrl: source.url,
+            )).firstOrNull;
+      final title = await _value(
+        document,
+        context,
+        rule,
+        'name',
+        jsVariables: vars,
+        sourceUrl: source.url,
+      );
+      if (title.isEmpty) {
+        _log(
+          source,
+          SourceDiagOp.detail,
+          SourceDiagLevel.error,
+          'getBook(bookId=$bookId) → title is empty',
+          details: 'finalUri=${response.finalUri}\n'
+              'ruleBookInfo.init=${init.isEmpty ? '(missing)' : init}\n'
+              'ruleBookInfo.name=${_optionalRule(rule, 'name')}',
+        );
+        throw const BookSourceProtocolException(
+          'Compatible source did not return a book title.',
+        );
+      }
+      final book = BookSourceBook(
+        id: response.finalUri.toString(),
+        title: title,
+        author: await _value(
+          document,
+          context,
+          rule,
+          'author',
+          jsVariables: vars,
+          sourceUrl: source.url,
+        ),
+        description: await _value(
+          document,
+          context,
+          rule,
+          'intro',
+          jsVariables: vars,
+          sourceUrl: source.url,
+        ),
+        coverUrl: await _uriValue(
+          document,
+          context,
+          rule,
+          'coverUrl',
+          vars: vars,
+          sourceUrl: source.url,
+        ),
+        categories: _splitCategories(
+          await _value(
             document,
-            null,
-            init,
+            context,
+            rule,
+            'kind',
             jsVariables: vars,
             sourceUrl: source.url,
-          )).firstOrNull;
-    final title = await _value(
-      document,
-      context,
-      rule,
-      'name',
-      jsVariables: vars,
-      sourceUrl: source.url,
-    );
-    if (title.isEmpty) {
-      throw const BookSourceProtocolException(
-        'Compatible source did not return a book title.',
+          ),
+        ),
+        status: _nullable(
+          await _value(
+            document,
+            context,
+            rule,
+            'status',
+            jsVariables: vars,
+            sourceUrl: source.url,
+          ),
+        ),
+        latestChapter: _nullable(
+          await _value(
+            document,
+            context,
+            rule,
+            'lastChapter',
+            jsVariables: vars,
+            sourceUrl: source.url,
+          ),
+        ),
       );
+      _log(
+        source,
+        SourceDiagOp.detail,
+        SourceDiagLevel.info,
+        'getBook(bookId=$bookId) → title="${book.title}" author="${book.author}"',
+        details: 'finalUri=${response.finalUri}\ncached=$cached',
+      );
+      return book;
+    } on BookSourceProtocolException {
+      rethrow;
+    } on Object catch (e) {
+      _log(
+        source,
+        SourceDiagOp.detail,
+        SourceDiagLevel.error,
+        'getBook(bookId=$bookId) unexpected error: $e',
+      );
+      rethrow;
     }
-    return BookSourceBook(
-      id: response.finalUri.toString(),
-      title: title,
-      author: await _value(
-        document,
-        context,
-        rule,
-        'author',
-        jsVariables: vars,
-        sourceUrl: source.url,
-      ),
-      description: await _value(
-        document,
-        context,
-        rule,
-        'intro',
-        jsVariables: vars,
-        sourceUrl: source.url,
-      ),
-      coverUrl: await _uriValue(
-        document,
-        context,
-        rule,
-        'coverUrl',
-        vars: vars,
-        sourceUrl: source.url,
-      ),
-      categories: _splitCategories(
-        await _value(
-          document,
-          context,
-          rule,
-          'kind',
-          jsVariables: vars,
-          sourceUrl: source.url,
-        ),
-      ),
-      status: _nullable(
-        await _value(
-          document,
-          context,
-          rule,
-          'status',
-          jsVariables: vars,
-          sourceUrl: source.url,
-        ),
-      ),
-      latestChapter: _nullable(
-        await _value(
-          document,
-          context,
-          rule,
-          'lastChapter',
-          jsVariables: vars,
-          sourceUrl: source.url,
-        ),
-      ),
-    );
   }
 
   Future<List<BookSourceChapter>> getChapters(
@@ -314,12 +398,29 @@ class LegadoRuntime {
         },
       );
     } on BookSourceProtocolException catch (e) {
-      if (tocUrl == bookId) rethrow;
+      if (tocUrl == bookId) {
+        _log(
+          source,
+          SourceDiagOp.chapters,
+          SourceDiagLevel.error,
+          'getChapters(bookId=$bookId) failed: ${e.message}',
+          details: 'tocUrl=$tocUrl (same as bookId)\n'
+              'attempts=${attempts.join(" | ")}',
+        );
+        rethrow;
+      }
       attempts.add('tocUrl attempt failed: ${e.message}');
     }
 
     // 第二轮回退：当 tocUrl 不是详情页时，直接用书籍详情页再解析一次。
     if (chapters.isEmpty && tocUrl != bookId) {
+      _log(
+        source,
+        SourceDiagOp.chapters,
+        SourceDiagLevel.warn,
+        'getChapters: first attempt empty, falling back to detail page',
+        details: 'tocUrl=$tocUrl → fallback to bookId=$bookId',
+      );
       try {
         chapters = await _fetchChapterPages(
           source,
@@ -344,6 +445,17 @@ class LegadoRuntime {
       final chapterNameRule = _optionalRule(rule, 'chapterName');
       final chapterUrlRule = _optionalRule(rule, 'chapterUrl');
       final diagnostic = attempts.isEmpty ? '(no attempts made)' : attempts.join(' | ');
+      _log(
+        source,
+        SourceDiagOp.chapters,
+        SourceDiagLevel.error,
+        'getChapters(bookId=$bookId) → 0 chapters after all attempts',
+        details: 'tocUrl=$tocUrl\n'
+            'chapterListRule=${chapterListRule.isEmpty ? "(missing)" : chapterListRule}\n'
+            'chapterNameRule=${chapterNameRule.isEmpty ? "(missing)" : chapterNameRule}\n'
+            'chapterUrlRule=${chapterUrlRule.isEmpty ? "(missing)" : chapterUrlRule}\n'
+            'attempts=$diagnostic',
+      );
       throw BookSourceProtocolException(
         'Compatible source did not return any chapters.\n'
         'Source: ${source.name} (${source.url})\n'
@@ -355,6 +467,13 @@ class LegadoRuntime {
         'Attempts: $diagnostic',
       );
     }
+    _log(
+      source,
+      SourceDiagOp.chapters,
+      SourceDiagLevel.info,
+      'getChapters(bookId=$bookId) → ${chapters.length} chapters',
+      details: 'tocUrl=$tocUrl\nattempts=${attempts.join(" | ")}',
+    );
     return chapters;
   }
 
@@ -513,6 +632,14 @@ class LegadoRuntime {
       chapterListHits: chapterListHits,
       validChapters: chapters.length,
     )) {
+      _log(
+        source,
+        SourceDiagOp.fallback,
+        SourceDiagLevel.warn,
+        'heading fallback triggered: chapterListHits=$chapterListHits '
+        'validChapters=${chapters.length} anchorPool=${fallbackPool.length}',
+        details: 'startUrl=$startUrl',
+      );
       final filtered = ChapterHeadingLibrary.filter(
         fallbackPool,
         titleOf: (c) => c.title,
@@ -528,9 +655,24 @@ class LegadoRuntime {
       // 只在 fallback 至少产出 3 条时才替换规则结果 —— 避免误触发
       // 把规则命中的正确结果盖掉。
       if (rebuilt.length >= 3 && rebuilt.length > chapters.length) {
+        _log(
+          source,
+          SourceDiagOp.fallback,
+          SourceDiagLevel.info,
+          'heading fallback replaced rule results: '
+          '${chapters.length} → ${rebuilt.length} chapters',
+        );
         chapters
           ..clear()
           ..addAll(rebuilt);
+      } else {
+        _log(
+          source,
+          SourceDiagOp.fallback,
+          SourceDiagLevel.info,
+          'heading fallback did not replace results: '
+          'rebuilt=${rebuilt.length} (need ≥3 and > ${chapters.length})',
+        );
       }
     }
 
@@ -574,6 +716,15 @@ class LegadoRuntime {
       } on BookSourceProtocolException catch (error) {
         // 后续分页 404/断连视为正文自然结束，保留已抓段落。
         if (hop > 0 && _isPaginationEndError(error)) break;
+        _log(
+          source,
+          SourceDiagOp.content,
+          SourceDiagLevel.error,
+          'getChapterContent(chapterId=$chapterId) HTTP failed at hop $hop',
+          details: 'bookId=$bookId\nnextUrl=$nextUrl\n'
+              'contentRule=${contentRule.isEmpty ? "(missing)" : contentRule}\n'
+              'cause=${error.message}',
+        );
         final detail = StringBuffer('Failed to load chapter content.\n')
           ..writeln('Source: ${source.name} (${source.url})')
           ..writeln('bookId: $bookId')
@@ -626,6 +777,16 @@ class LegadoRuntime {
         'httpOk=$httpOk',
         'contentRuleHits=$contentRuleHits',
       ].join(' ');
+      _log(
+        source,
+        SourceDiagOp.content,
+        SourceDiagLevel.error,
+        'getChapterContent(chapterId=$chapterId) → empty content',
+        details: 'bookId=$bookId\nhops=$hop httpOk=$httpOk contentRuleHits=$contentRuleHits\n'
+            'contentRule=${contentRule.isEmpty ? "(missing)" : contentRule}\n'
+            'nextContentUrlRule=${nextUrlRule.isEmpty ? "(missing)" : nextUrlRule}\n'
+            'chapterId(=firstPageUrl)=$chapterId',
+      );
       throw BookSourceProtocolException(
         'Compatible source did not return chapter content.\n'
         'Source: ${source.name} (${source.url})\n'
@@ -652,6 +813,14 @@ class LegadoRuntime {
         }
       }
     }
+    _log(
+      source,
+      SourceDiagOp.content,
+      SourceDiagLevel.info,
+      'getChapterContent(chapterId=$chapterId) → '
+      '${joined.length} chars, $hop hop(s), '
+      '${imageUrls?.length ?? audioUrls?.length ?? 0} media urls',
+    );
     return BookSourceChapterContent(
       bookId: bookId,
       chapterId: chapterId,

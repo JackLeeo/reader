@@ -38,6 +38,8 @@ class ReaderChromeOverlay extends StatelessWidget {
     this.nightModeActive = false,
     this.onSwitchSource,
     this.switchSourceTooltip,
+    this.onDiagnosticLog,
+    this.diagnosticLogTooltip,
     this.topKey,
     this.bottomKey,
     this.statusKey,
@@ -80,6 +82,10 @@ class ReaderChromeOverlay extends StatelessWidget {
   /// 手动换源入口（yuedu_hd 风格：阅读中切换同书其它书源）。
   final VoidCallback? onSwitchSource;
   final String? switchSourceTooltip;
+
+  /// 导出诊断日志入口（排查书源问题时用）。
+  final VoidCallback? onDiagnosticLog;
+  final String? diagnosticLogTooltip;
   final Key? topKey;
   final Key? bottomKey;
   final Key? statusKey;
@@ -274,6 +280,13 @@ class ReaderChromeOverlay extends StatelessWidget {
                           onPressed: onSwitchSource,
                           tooltip: switchSourceTooltip ?? '',
                           icon: Icons.swap_horiz_rounded,
+                        ),
+                      if (onDiagnosticLog != null)
+                        ReaderControlIconButton(
+                          palette: palette,
+                          onPressed: onDiagnosticLog,
+                          tooltip: diagnosticLogTooltip ?? '',
+                          icon: Icons.bug_report_outlined,
                         ),
                       if (showSettingsAction)
                         ReaderControlIconButton(
