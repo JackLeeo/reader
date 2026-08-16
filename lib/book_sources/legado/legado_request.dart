@@ -291,12 +291,24 @@ class LegadoHttpTransport implements LegadoTransport {
           .join('; ');
       final mergedHeaders = Map<String, String>.of(request.headers)
         ..removeWhere((name, _) => name.toLowerCase() == 'cookie');
-      // 默认 User-Agent：大量站点对无 UA 请求返回 403/防爬页面，
-      // 会导致搜索与正文提取静默失败。
+      // 默认浏览器头栈：大量站点对"裸请求"（缺 Accept/UA/AL）直接 403
+      // 或返回反爬验证页。逐个判断，源没声明才补默认值。
       if (!mergedHeaders.keys.any(
         (name) => name.toLowerCase() == 'user-agent',
       )) {
         mergedHeaders['User-Agent'] = defaultLegadoUserAgent;
+      }
+      if (!mergedHeaders.keys.any(
+        (name) => name.toLowerCase() == 'accept',
+      )) {
+        mergedHeaders['Accept'] =
+            'text/html,application/xhtml+xml,application/xml;q=0.9,'
+            'image/avif,image/webp,*/*;q=0.8';
+      }
+      if (!mergedHeaders.keys.any(
+        (name) => name.toLowerCase() == 'accept-language',
+      )) {
+        mergedHeaders['Accept-Language'] = 'zh-CN,zh;q=0.9,en;q=0.7';
       }
       // 防盗链 Referer：目录/正文页常校验来源页，缺失直接 403。
       // 书源 headers 显式声明的 Referer 优先，不被覆盖。
@@ -319,7 +331,7 @@ class LegadoHttpTransport implements LegadoTransport {
       } on DioException catch (error) {
         // 连接类失败重试一次：聚合并发下的偶发连接被拒/超时。
         if (!_isRetryableConnectionError(error)) {
-          _rethrowRequestException(error);
+          _rethrowRequestException(error, current);
         }
         await Future<void>.delayed(const Duration(milliseconds: 300));
         try {
@@ -331,7 +343,7 @@ class LegadoHttpTransport implements LegadoTransport {
             mergedHeaders,
           );
         } on DioException catch (error) {
-          _rethrowRequestException(error);
+          _rethrowRequestException(error, current);
         }
       }
       jar.storeFromResponse(
@@ -349,6 +361,18 @@ class LegadoHttpTransport implements LegadoTransport {
         return LegadoResponse(
           body: _decode(bytes, request.charset, response.headers),
           finalUri: current,
+        );
+      }
+      // 4xx/5xx 不再静默吞响应体：把 body（最多 200 字符，去掉空白）拼入
+      // 错误消息，让用户能一眼判断是 Cloudflare 挑战页、站点关站还是
+      // 登录态失效，而不是一个干巴巴的 "HTTP 404"。
+      if (status >= 400) {
+        final bytes = response.data ?? const <int>[];
+        final bodySnippet = _errorBodySnippet(bytes, response.headers);
+        throw BookSourceProtocolException(
+          bodySnippet.isEmpty
+              ? 'Legado source returned HTTP $status for ${current.toString()}.'
+              : 'Legado source returned HTTP $status for ${current.toString()}.\nResponse: $bodySnippet',
         );
       }
       if (redirects == 5) {
@@ -387,8 +411,9 @@ class LegadoHttpTransport implements LegadoTransport {
         headers: mergedHeaders,
         responseType: ResponseType.bytes,
         followRedirects: false,
-        validateStatus: (status) =>
-            status != null && status >= 200 && status < 400,
+        // validateStatus 允许 4xx/5xx 通过：send() 会手动把响应体
+        // 裁剪后拼入错误消息，避免 DioException 把 body 丢掉。
+        validateStatus: (status) => status != null && status >= 200 && status < 600,
       ),
       cancelToken: cancelToken,
       onReceiveProgress: (received, total) {
@@ -404,17 +429,45 @@ class LegadoHttpTransport implements LegadoTransport {
     return error.response == null;
   }
 
-  Never _rethrowRequestException(DioException error) {
+  Never _rethrowRequestException(DioException error, Uri target) {
     if (CancelToken.isCancel(error)) {
       throw BookSourceProtocolException(
         error.message ?? 'Legado request was cancelled.',
       );
     }
+    final status = error.response?.statusCode;
+    // 错误消息必须包含目标 URL：不然 10 个源并发报错时，
+    // 用户根本分不清是哪个站点挂了。
     throw BookSourceProtocolException(
-      error.response?.statusCode == null
-          ? 'Could not connect to the Legado source.'
-          : 'Legado source returned HTTP ${error.response!.statusCode}.',
+      status == null
+          ? 'Could not connect to ${target.toString()} (${error.type.name}).'
+          : 'Legado source returned HTTP $status for ${target.toString()}.',
     );
+  }
+
+  /// 把 4xx/5xx 响应体裁剪成最多 200 字符的单行摘要：
+  /// HTML/XML 去标签，JSON 去空白，Unicode 控制字符去掉。
+  static String _errorBodySnippet(List<int> bytes, Headers headers) {
+    try {
+      var text = _decode(bytes, 'utf-8', headers);
+      // 去 <script>/<style> 整段和所有 HTML 标签。
+      text = text.replaceAll(
+        RegExp(r'<script[\s\S]*?</script>', caseSensitive: false),
+        ' ',
+      );
+      text = text.replaceAll(
+        RegExp(r'<style[\s\S]*?</style>', caseSensitive: false),
+        ' ',
+      );
+      text = text.replaceAll(RegExp(r'<[^>]*>'), ' ');
+      // 折叠空白和控制字符。
+      text = text.replaceAll(RegExp(r'[\x00-\x1F\x7F]+'), ' ');
+      text = text.replaceAll(RegExp(r'\s+'), ' ').trim();
+      if (text.length <= 200) return text;
+      return '${text.substring(0, 200)}…';
+    } catch (_) {
+      return '';
+    }
   }
 }
 

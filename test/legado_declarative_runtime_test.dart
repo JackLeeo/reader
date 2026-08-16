@@ -354,14 +354,23 @@ void main() {
     test('rejects unsupported behavior before sending a request', () async {
       final transport = _FakeTransport(const {});
       final raw = Map<String, dynamic>.from(_htmlSource().raw);
-      raw['loginUrl'] = 'https://books.test/login';
+      // bookSourceType=4（视频源）是硬 blocked，必须在扫描阶段就拦，
+      // 不得发起任何网络请求。之前的 loginUrl 标记现已从硬 blocked 降为
+      // partial（警告级），不再用来测这个语义。
+      raw['bookSourceType'] = 4;
 
       await expectLater(
         LegadoRuntime(transport: transport).search(
           LegadoBookSource.fromJson(raw).toRegisteredSource(enabled: true),
           'test',
         ),
-        throwsA(isA<BookSourceProtocolException>()),
+        throwsA(
+          isA<BookSourceProtocolException>().having(
+            (e) => e.message,
+            'message',
+            contains('not supported'),
+          ),
+        ),
       );
       expect(transport.requests, isEmpty);
     });

@@ -263,8 +263,21 @@ class LegadoRuleEngine {
       ];
     }
 
-    // XPath 规则（// 开头）。
-    if (normalized.startsWith('//')) {
+    // XPath 规则：
+    //   //foo            绝对路径（最常见）
+    //   ./foo  .//foo   相对当前节点
+    //   ../foo          父节点起步
+    //   /foo[@bar='x']  单斜杠绝对路径 + 谓词（不含模板）
+    // 注意：单斜杠 /foo 但不含 [] 的写法极易跟 URL 模板（如 /books/{{id}}）
+    // 混淆，所以只有带谓词 [ 才判定为 XPath；包含 {{ 模板变量的一律
+    // 走字符串插值路径。
+    if (normalized.contains('{{')) {
+      // fallthrough
+    } else if (normalized.startsWith('//') ||
+        normalized.startsWith('./') ||
+        normalized.startsWith('.//') ||
+        normalized.startsWith('..') ||
+        (normalized.startsWith('/') && normalized.contains('['))) {
       return _evaluateXPath(root, normalized);
     }
     // 整条规则为 JS（@js: 前缀或 <js> 块）。
@@ -453,16 +466,46 @@ class LegadoRuleEngine {
   }
 
   List<Object?>? _terminalValue(List<Element> nodes, String segment) {
-    return switch (segment) {
-      'text' => nodes.map((node) => node.text).toList(),
-      'ownText' || 'textNodes' => nodes.map(_ownText).toList(),
-      'html' => nodes.map((node) => node.innerHtml).toList(),
-      _
-          when _htmlAttributeNames.contains(segment.toLowerCase()) ||
-              nodes.any((node) => node.attributes.containsKey(segment)) =>
-        nodes.map((node) => node.attributes[segment] ?? '').toList(),
-      _ => null,
-    };
+    // 内置"伪属性"终结词：精确匹配，大小写敏感。
+    switch (segment) {
+      case 'text':
+        return nodes.map((node) => node.text).toList();
+      case 'ownText':
+      case 'textNodes':
+        return nodes.map(_ownText).toList();
+      case 'html':
+        return nodes.map((node) => node.innerHtml).toList();
+    }
+    // 其余一律按"属性查找"处理：
+    //   1) 先在常用属性白名单里精确匹配（大小写不敏感）
+    //   2) 再对每个节点的 attributes 做大小写不敏感查找
+    //      （HTML 解析器可能会把属性名标准化成小写，但用户规则里
+    //      常出现 Data-src / SRC / data-original 这类写法）。
+    final normalized = segment.toLowerCase();
+    // 至少有一个节点命中该属性（大小写不敏感）才当作属性终结步，
+    // 否则回 null 让调用方走 _select CSS 选择器路径。
+    final candidates = nodes.map((node) {
+      final attrs = node.attributes;
+      // html 包的 attributes 是 Map<Object?, Object?> 弱类型视图，
+      // 先查精确 key（通常已经被 html 解析器转成小写），
+      // 找不到再全量遍历做大小写不敏感匹配。
+      final exactHit = attrs[normalized];
+      if (exactHit is String) return exactHit;
+      for (final entry in attrs.entries) {
+        final key = entry.key;
+        if (key is String && key.toLowerCase() == normalized) {
+          final v = entry.value;
+          return v is String ? v : '';
+        }
+      }
+      // 白名单命中（用户写 href/src/content 但节点没声明时给空串占位）
+      if (_htmlAttributeNames.contains(normalized)) return '';
+      return null;
+    });
+    if (candidates.any((value) => value != null)) {
+      return candidates.map((value) => value ?? '').toList();
+    }
+    return null;
   }
 
   List<Element> _select(
@@ -532,10 +575,30 @@ class LegadoRuleEngine {
       selector = selector.substring(0, exclusion.start);
     }
     List<int>? indexes;
-    final indexMatch = RegExp(r'\.(-?\d+(?::-?\d+)*)$').firstMatch(selector);
+    // Legado 支持的索引后缀（都在选择器末尾）：
+    //   .0 .2.-1 .0:-1:2   → 点号分隔：后面一串 ':' 分隔的下标全部取出应用
+    //   :0 :-1 :1:5        → 冒号形式：单值 = 取下标，多值（a:b 范围）保守取首值
+    final indexMatch =
+        RegExp(r'([.:])(-?\d+(?::-?\d+)*)$').firstMatch(selector);
     if (indexMatch != null) {
-      indexes = indexMatch.group(1)!.split(':').map(int.parse).toList();
-      selector = selector.substring(0, indexMatch.start);
+      final sep = indexMatch.group(1)!;
+      final raw = indexMatch.group(2)!;
+      final parts = raw.split(':');
+      final parsed = <int>[];
+      for (final p in parts) {
+        final v = int.tryParse(p.trim());
+        if (v == null) {
+          parsed.clear();
+          break;
+        }
+        parsed.add(v);
+      }
+      if (parsed.isNotEmpty) {
+        indexes = sep == '.' || parsed.length == 1
+            ? parsed.toList(growable: false)
+            : [parsed.first];
+        selector = selector.substring(0, indexMatch.start);
+      }
     }
     String? text;
     if (selector.startsWith('class.')) {

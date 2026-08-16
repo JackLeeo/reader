@@ -295,32 +295,63 @@ class LegadoRuntime {
     await _ensureRunnable(source);
     final vars = _jsVariables(source);
     final tocUrl = await _tocUrl(source, bookId);
+    final attempts = <String>[];
     var chapters = const <BookSourceChapter>[];
-    // tocRule 求值出的目录地址请求失败（404/断连）时回退详情页：
-    // 求值结果可能是非法地址或书名文本，详情页本身常含章节列表。
+
+    // 第一轮：tocRule 求值出的目录地址（可能是派生的独立目录页）。
     try {
       chapters = await _fetchChapterPages(
         source,
         tocUrl,
         vars,
         referer: bookId,
+        onDiagnostics: (d) {
+          attempts.add(
+            'tocUrl=$tocUrl requestOk=${d.httpOk} chapterHits=${d.chapterListHits} '
+            'validChapters=${d.validChapters}',
+          );
+        },
       );
-    } on BookSourceProtocolException {
+    } on BookSourceProtocolException catch (e) {
       if (tocUrl == bookId) rethrow;
+      attempts.add('tocUrl attempt failed: ${e.message}');
     }
-    // 目录页解析不出章节时也回退详情页再解析一次（tocUrl 求值
-    // 指向了非目录页面的常见容错，详见 yuedu_hd 同类回退）。
+
+    // 第二轮回退：当 tocUrl 不是详情页时，直接用书籍详情页再解析一次。
     if (chapters.isEmpty && tocUrl != bookId) {
-      chapters = await _fetchChapterPages(
-        source,
-        bookId,
-        vars,
-        referer: bookId,
-      );
+      try {
+        chapters = await _fetchChapterPages(
+          source,
+          bookId,
+          vars,
+          referer: bookId,
+          onDiagnostics: (d) {
+            attempts.add(
+              'fallback=detailPage bookId=$bookId requestOk=${d.httpOk} '
+              'chapterHits=${d.chapterListHits} validChapters=${d.validChapters}',
+            );
+          },
+        );
+      } on BookSourceProtocolException catch (e) {
+        attempts.add('detailPage fallback failed: ${e.message}');
+      }
     }
+
     if (chapters.isEmpty) {
-      throw const BookSourceProtocolException(
-        'Compatible source did not return any chapters.',
+      final rule = source.rule('ruleToc');
+      final chapterListRule = _optionalRule(rule, 'chapterList');
+      final chapterNameRule = _optionalRule(rule, 'chapterName');
+      final chapterUrlRule = _optionalRule(rule, 'chapterUrl');
+      final diagnostic = attempts.isEmpty ? '(no attempts made)' : attempts.join(' | ');
+      throw BookSourceProtocolException(
+        'Compatible source did not return any chapters.\n'
+        'Source: ${source.name} (${source.url})\n'
+        'tocUrl evaluated: $tocUrl\n'
+        'bookId (detail page): $bookId\n'
+        'chapterList rule: ${chapterListRule.isEmpty ? '(missing)' : chapterListRule}\n'
+        'chapterName rule: ${chapterNameRule.isEmpty ? '(missing)' : chapterNameRule}\n'
+        'chapterUrl rule: ${chapterUrlRule.isEmpty ? '(missing)' : chapterUrlRule}\n'
+        'Attempts: $diagnostic',
       );
     }
     return chapters;
@@ -332,6 +363,7 @@ class LegadoRuntime {
     String startUrl,
     Map<String, Object?> vars, {
     String? referer,
+    void Function(_ChapterPageDiagnostics d)? onDiagnostics,
   }) async {
     final rule = source.rule('ruleToc');
     final chapters = <BookSourceChapter>[];
@@ -342,6 +374,8 @@ class LegadoRuntime {
     final pendingPages = <String>[startUrl];
     // 翻页链路的 Referer 逐页前移：后续页的来源是前一页。
     var pageReferer = referer;
+    var httpOk = false;
+    var chapterListHits = 0;
     for (var hop = 0; hop < _maxPageHops && pendingPages.isNotEmpty; hop++) {
       final pageUrl = pendingPages.removeAt(0);
       if (pageUrl.isEmpty || !seenPages.add(pageUrl)) continue;
@@ -352,9 +386,17 @@ class LegadoRuntime {
         response =
             _cachedDetailPage(pageUrl) ??
             await _request(source, pageUrl, referer: pageReferer);
+        httpOk = true;
       } on BookSourceProtocolException catch (error) {
         // 后续分页 404/断连视为自然结束，保留已抓章节（yuedu_hd 行为）。
         if (hop > 0 && _isPaginationEndError(error)) break;
+        onDiagnostics?.call(
+          _ChapterPageDiagnostics(
+            httpOk: false,
+            chapterListHits: chapterListHits,
+            validChapters: chapters.length,
+          ),
+        );
         rethrow;
       }
       pageReferer = response.finalUri.toString();
@@ -369,6 +411,7 @@ class LegadoRuntime {
         jsVariables: vars,
         sourceUrl: source.url,
       );
+      chapterListHits += contexts.length;
       for (final context in contexts) {
         final title = await _value(
           document,
@@ -414,6 +457,13 @@ class LegadoRuntime {
         pendingPages.add(resolved.toString());
       }
     }
+    onDiagnostics?.call(
+      _ChapterPageDiagnostics(
+        httpOk: httpOk,
+        chapterListHits: chapterListHits,
+        validChapters: chapters.length,
+      ),
+    );
     return chapters;
   }
 
@@ -427,21 +477,34 @@ class LegadoRuntime {
     await _ensureRunnable(source);
     final vars = _jsVariables(source);
     final rule = source.rule('ruleContent');
+    final contentRule = _optionalRule(rule, 'content');
+    final nextUrlRule = _optionalRule(rule, 'nextContentUrl');
     final parts = <String>[];
     final seenPages = <String>{};
     var lastFinalUri = source.baseUri;
     var nextUrl = chapterId;
     // 正文页防盗链：首章页 Referer 指向书籍详情页，翻页后逐页前移。
     var pageReferer = bookId;
-    for (var hop = 0; hop < _maxPageHops && nextUrl.isNotEmpty; hop++) {
+    var hop = 0;
+    var httpOk = false;
+    var contentRuleHits = 0;
+    for (; hop < _maxPageHops && nextUrl.isNotEmpty; hop++) {
       if (!seenPages.add(nextUrl)) break;
       final LegadoResponse response;
       try {
         response = await _request(source, nextUrl, referer: pageReferer);
+        httpOk = true;
       } on BookSourceProtocolException catch (error) {
         // 后续分页 404/断连视为正文自然结束，保留已抓段落。
         if (hop > 0 && _isPaginationEndError(error)) break;
-        rethrow;
+        final detail = StringBuffer('Failed to load chapter content.\n')
+          ..writeln('Source: ${source.name} (${source.url})')
+          ..writeln('bookId: $bookId')
+          ..writeln('chapterId: $chapterId')
+          ..writeln('failed page $hop: $nextUrl')
+          ..writeln('content rule: ${contentRule.isEmpty ? '(missing)' : contentRule}')
+          ..write('Cause: ${error.message}');
+        throw BookSourceProtocolException(detail.toString());
       }
       lastFinalUri = response.finalUri;
       pageReferer = response.finalUri.toString();
@@ -458,6 +521,7 @@ class LegadoRuntime {
         jsVariables: vars,
         sourceUrl: source.url,
       );
+      if (content.isNotEmpty) contentRuleHits++;
       content = _rules.applyReplaceRule(
         content,
         _optionalRule(rule, 'replaceRegex'),
@@ -480,8 +544,20 @@ class LegadoRuntime {
       }
     }
     if (parts.isEmpty) {
-      throw const BookSourceProtocolException(
-        'Compatible source did not return chapter content.',
+      final diagnostic = [
+        'hops=$hop',
+        'httpOk=$httpOk',
+        'contentRuleHits=$contentRuleHits',
+      ].join(' ');
+      throw BookSourceProtocolException(
+        'Compatible source did not return chapter content.\n'
+        'Source: ${source.name} (${source.url})\n'
+        'bookId: $bookId\n'
+        'chapterId: $chapterId\n'
+        'nextChapterId: ${nextChapterId ?? '(none)'}\n'
+        'content rule: ${contentRule.isEmpty ? '(missing)' : contentRule}\n'
+        'nextContentUrl rule: ${nextUrlRule.isEmpty ? '(missing)' : nextUrlRule}\n'
+        'Diagnostics: $diagnostic',
       );
     }
     final joined = parts.join('\n\n');
@@ -1066,3 +1142,17 @@ List<String> _splitCategories(String value) => value
 
 String stableLegadoResourceId(String value) =>
     sha256.convert(utf8.encode(value)).toString().substring(0, 24);
+
+/// 目录抓取过程中的轻量诊断：HTTP 成功了没、chapterList 规则匹配了多少、
+/// 其中 chapterName+chapterUrl 双非空的有效条目有几条。
+class _ChapterPageDiagnostics {
+  const _ChapterPageDiagnostics({
+    required this.httpOk,
+    required this.chapterListHits,
+    required this.validChapters,
+  });
+
+  final bool httpOk;
+  final int chapterListHits;
+  final int validChapters;
+}

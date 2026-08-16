@@ -145,15 +145,22 @@ class LegadoBookSource {
     bool readingChainVerified = false,
   }) {
     final report = const LegadoCompatibilityScanner().scan(this);
-    final canEnable = report.canRun && readingChainVerified;
-    // 带 exploreUrl 的源同时开放发现页能力：分类=发现入口列表，
-    // 浏览=按入口地址拉取书籍列表（Legado 的发现走 ruleExplore）。
+    // 硬 blocked 的源（video/缺阅读规则/Rhino脚本）整体不可用；
+    // 其余（无搜索/需登录/自定义DNS等）按实际能力开放，不再一刀切拦。
+    final hardBlocked = !report.canRun;
+    final canReadingChain = !hardBlocked && readingChainVerified;
+    final hasReadingRules =
+        rule('ruleToc').isNotEmpty && rule('ruleContent').isNotEmpty;
+    // 能力按独立维度开放：
+    //   - 发现/分类/浏览：只要源有 exploreUrl 且不是硬 blocked 就能用
+    //   - 搜索：有 searchUrl 且非硬 blocked
+    //   - 详情/目录/正文（阅读链路）：有 toc+content 规则 + readingChainVerified
     final capabilities = <String>{
-      if (canEnable) 'search',
-      if (canEnable) 'detail',
-      if (canEnable) 'catalog',
-      if (canEnable) 'content',
-      if (canEnable && exploreEntries.isNotEmpty) ...const [
+      if (!hardBlocked && searchUrl.isNotEmpty) 'search',
+      if (canReadingChain && hasReadingRules) 'detail',
+      if (canReadingChain && hasReadingRules) 'catalog',
+      if (canReadingChain && hasReadingRules) 'content',
+      if (!hardBlocked && exploreEntries.isNotEmpty) ...const [
         'discover',
         'categories',
         'browse',
@@ -169,7 +176,7 @@ class LegadoBookSource {
       protocolVersion: 'legado-3',
       languages: const [],
       capabilities: capabilities,
-      enabled: enabled && canEnable,
+      enabled: enabled && !hardBlocked,
       addedAt: DateTime.now(),
       sourceProtocol: BookSourceProtocolKind.legado,
       sourceConfig: {
@@ -194,7 +201,15 @@ class LegadoCompatibilityReport {
   final LegadoCompatibilityLevel level;
   final Set<LegadoCompatibilityIssue> issues;
 
-  bool get canRun => level == LegadoCompatibilityLevel.supported;
+  /// 「能运行」= supported 或 partial（无搜索、需登录等警告级 issue），
+  /// 只有真正物理不可用的 unsupported（视频源/缺阅读规则/Rhino脚本）才返回 false。
+  /// 之前把 partial 归到 !canRun 里，导致大批有发现页能力的源被运行时二次拦截，
+  /// 表现为「发现页能看到书但点阅读失败」的假象。
+  bool get canRun => level != LegadoCompatibilityLevel.unsupported;
+
+  /// 阅读链路（详情/目录/正文）能否真正跑：有 ruleToc+ruleContent 且非 unsupported。
+  bool get readingChainUsable =>
+      canRun && !issues.contains(LegadoCompatibilityIssue.missingReadingRules);
 }
 
 class LegadoCompatibilityScanner {
@@ -246,10 +261,6 @@ class LegadoCompatibilityScanner {
 
     const blocked = {
       LegadoCompatibilityIssue.video,
-      LegadoCompatibilityIssue.login,
-      LegadoCompatibilityIssue.customDns,
-      LegadoCompatibilityIssue.customProxy,
-      LegadoCompatibilityIssue.missingSearch,
       LegadoCompatibilityIssue.missingReadingRules,
       LegadoCompatibilityIssue.rhinoScript,
     };
