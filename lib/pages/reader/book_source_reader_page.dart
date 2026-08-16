@@ -1139,14 +1139,12 @@ class _BookSourceReaderPageState extends State<BookSourceReaderPage>
       return;
     }
     try {
-      final path = await logger.exportToFile(
-        sourceId: widget.source.id,
-      );
+      final path = await logger.exportToFile();
       if (!mounted) return;
       if (path != null) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('诊断日志已保存：\n$path'),
+            content: Text('诊断日志已保存（${logger.entries.length}条）：\n$path'),
             duration: const Duration(seconds: 6),
           ),
         );
