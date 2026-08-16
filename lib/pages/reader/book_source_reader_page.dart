@@ -216,6 +216,8 @@ class _BookSourceReaderPageState extends State<BookSourceReaderPage>
   bool _openingContentReadyScheduled = false;
   Timer? _openingLoaderTimer;
   Timer? _openingContentReadyTimer;
+  Timer? _readerFontReadyFallbackTimer;
+  bool _readerFontReadyForced = false;
   ReaderTopBarStyle _topBarStyle = ReaderTopBarStyle.reader;
   ReaderAloudController? _readerAloudController;
   bool _readerAloudActive = false;
@@ -329,6 +331,15 @@ class _BookSourceReaderPageState extends State<BookSourceReaderPage>
     _verticalChapterPositionsListener.itemPositions.addListener(
       _onVerticalChapterPositionsChanged,
     );
+    // 字体初始化挂起兜底：_readerFontReady 依赖 AppSettingsNotifier
+    // 初始化（iOS release 下字体服务可能挂起），不兜底会让阅读页
+    // 永远停在加载态（正文早已就绪但不渲染）。10s 后强制以系统
+    // 字体渲染；初始化稍后恢复时 didChangeDependencies 会纠正字体。
+    _readerFontReadyFallbackTimer = Timer(const Duration(seconds: 10), () {
+      if (!mounted || _readerFontReady) return;
+      _readerFontReadyForced = true;
+      setState(() => _readerFontReady = true);
+    });
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (!mounted || _readerSystemUiApplied) return;
       final topBarStyle = await ReaderSystemUiController.applySavedPreference(
@@ -355,7 +366,7 @@ class _BookSourceReaderPageState extends State<BookSourceReaderPage>
     } on ProviderNotFoundException {
       // Reader widgets remain embeddable in tests and isolated previews.
     }
-    _readerFontReady = nextReaderFontReady;
+    _readerFontReady = nextReaderFontReady || _readerFontReadyForced;
     if (_readerFont.id == nextReaderFont.id) return;
     _readerFont = nextReaderFont;
     _paginationKey = null;
@@ -423,6 +434,7 @@ class _BookSourceReaderPageState extends State<BookSourceReaderPage>
     WidgetsBinding.instance.removeObserver(this);
     _openingLoaderTimer?.cancel();
     _openingContentReadyTimer?.cancel();
+    _readerFontReadyFallbackTimer?.cancel();
     _progressSaveTimer?.cancel();
     _controlsTimer?.cancel();
     _pagedLayoutWarmTimer?.cancel();

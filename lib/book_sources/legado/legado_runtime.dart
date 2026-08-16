@@ -195,8 +195,13 @@ class LegadoRuntime {
     final source = _source(registered);
     await _ensureRunnable(source);
     final vars = _jsVariables(source);
-    final response = await _request(source, bookId);
-    _cacheDetailPage(bookId, response);
+    // 详情页优先读短期缓存：详情页 UI 已抓过一次的场景（点击进阅读）
+    // 不能再次真实请求——一次性 token / 防盗链站点第二次会 403/404。
+    final cached = _cachedDetailPage(bookId);
+    final response = cached ?? await _request(source, bookId);
+    if (cached == null) {
+      _cacheDetailPage(bookId, response);
+    }
     final document = LegadoRuleDocument.parse(response.body, response.finalUri);
     final rule = source.rule('ruleBookInfo');
     final init = _optionalRule(rule, 'init');
@@ -294,14 +299,24 @@ class LegadoRuntime {
     // tocRule 求值出的目录地址请求失败（404/断连）时回退详情页：
     // 求值结果可能是非法地址或书名文本，详情页本身常含章节列表。
     try {
-      chapters = await _fetchChapterPages(source, tocUrl, vars);
+      chapters = await _fetchChapterPages(
+        source,
+        tocUrl,
+        vars,
+        referer: bookId,
+      );
     } on BookSourceProtocolException {
       if (tocUrl == bookId) rethrow;
     }
     // 目录页解析不出章节时也回退详情页再解析一次（tocUrl 求值
     // 指向了非目录页面的常见容错，详见 yuedu_hd 同类回退）。
     if (chapters.isEmpty && tocUrl != bookId) {
-      chapters = await _fetchChapterPages(source, bookId, vars);
+      chapters = await _fetchChapterPages(
+        source,
+        bookId,
+        vars,
+        referer: bookId,
+      );
     }
     if (chapters.isEmpty) {
       throw const BookSourceProtocolException(
@@ -315,8 +330,9 @@ class LegadoRuntime {
   Future<List<BookSourceChapter>> _fetchChapterPages(
     LegadoBookSource source,
     String startUrl,
-    Map<String, Object?> vars,
-  ) async {
+    Map<String, Object?> vars, {
+    String? referer,
+  }) async {
     final rule = source.rule('ruleToc');
     final chapters = <BookSourceChapter>[];
     final seenPages = <String>{};
@@ -324,17 +340,24 @@ class LegadoRuntime {
     // 队列式分页：nextTocUrl 支持逗号多值（对照 yuedu_hd split(',')），
     // 一页可同时派生多个后续页（数字目录/多线路分页源）。
     final pendingPages = <String>[startUrl];
+    // 翻页链路的 Referer 逐页前移：后续页的来源是前一页。
+    var pageReferer = referer;
     for (var hop = 0; hop < _maxPageHops && pendingPages.isNotEmpty; hop++) {
       final pageUrl = pendingPages.removeAt(0);
       if (pageUrl.isEmpty || !seenPages.add(pageUrl)) continue;
       final LegadoResponse response;
       try {
-        response = await _request(source, pageUrl);
+        // 详情页零二次请求：tocUrl 求值回退/本身就是详情页时，
+        // 必须复用缓存而不是再次真实请求（防重放站点 403/404）。
+        response =
+            _cachedDetailPage(pageUrl) ??
+            await _request(source, pageUrl, referer: pageReferer);
       } on BookSourceProtocolException catch (error) {
         // 后续分页 404/断连视为自然结束，保留已抓章节（yuedu_hd 行为）。
         if (hop > 0 && _isPaginationEndError(error)) break;
         rethrow;
       }
+      pageReferer = response.finalUri.toString();
       final document = LegadoRuleDocument.parse(
         response.body,
         response.finalUri,
@@ -408,17 +431,20 @@ class LegadoRuntime {
     final seenPages = <String>{};
     var lastFinalUri = source.baseUri;
     var nextUrl = chapterId;
+    // 正文页防盗链：首章页 Referer 指向书籍详情页，翻页后逐页前移。
+    var pageReferer = bookId;
     for (var hop = 0; hop < _maxPageHops && nextUrl.isNotEmpty; hop++) {
       if (!seenPages.add(nextUrl)) break;
       final LegadoResponse response;
       try {
-        response = await _request(source, nextUrl);
+        response = await _request(source, nextUrl, referer: pageReferer);
       } on BookSourceProtocolException catch (error) {
         // 后续分页 404/断连视为正文自然结束，保留已抓段落。
         if (hop > 0 && _isPaginationEndError(error)) break;
         rethrow;
       }
       lastFinalUri = response.finalUri;
+      pageReferer = response.finalUri.toString();
       final document = LegadoRuleDocument.parse(
         response.body,
         response.finalUri,
@@ -690,6 +716,7 @@ class LegadoRuntime {
     LegadoBookSource source,
     String template, {
     Map<String, String> variables = const {},
+    String? referer,
   }) async {
     final expanded = await _expandTemplate(
       template,
@@ -703,6 +730,7 @@ class LegadoRuntime {
         baseUri: source.baseUri,
         variables: const {},
         sourceHeaders: await _sourceHeaders(source),
+        referer: referer,
       ),
     );
   }

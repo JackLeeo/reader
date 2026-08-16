@@ -203,6 +203,84 @@ void main() {
       expect(chapters, hasLength(1));
       expect(chapters.first.title, '第一章');
     });
+
+    test('empty toc rule never refetches the detail page', () async {
+      // tocRule 为空 → 目录页即详情页。getBook 之后即使详情页 URL
+      // 被站点拒绝（一次性 token 二次请求 404/403），getChapters 也
+      // 必须复用缓存解析，不再发起第二次真实请求。
+      final transport = _CountingTransport({
+        'https://books.test/book/1': '''
+          <html><body>
+            <h1>详情书名</h1>
+            <ul id="chapters">
+              <li><a href="/c/1">第一章</a></li>
+              <li><a href="/c/2">第二章</a></li>
+            </ul>
+          </body></html>
+        ''',
+      });
+      final runtime = LegadoRuntime(transport: transport);
+      final registered = _contentSource().toRegisteredSource(enabled: true);
+
+      await runtime.getBook(registered, 'https://books.test/book/1');
+      transport.failWith404.add('https://books.test/book/1');
+      final chapters = await runtime.getChapters(
+        registered,
+        'https://books.test/book/1',
+      );
+      expect(transport.requestCount['https://books.test/book/1'], 1);
+      expect(chapters, hasLength(2));
+    });
+
+    test('repeated getBook reuses the cached detail page', () async {
+      final transport = _CountingTransport({
+        'https://books.test/book/1': _detailHtml(),
+      });
+      final runtime = LegadoRuntime(transport: transport);
+      final registered = _source().toRegisteredSource(enabled: true);
+
+      await runtime.getBook(registered, 'https://books.test/book/1');
+      transport.failWith404.add('https://books.test/book/1');
+      await runtime.getBook(registered, 'https://books.test/book/1');
+
+      expect(transport.requestCount['https://books.test/book/1'], 1);
+    });
+
+    test('toc and content requests carry the anti-leech referer', () async {
+      // 目录页请求 Referer=详情页；正文请求 Referer=详情页起步、
+      // 翻页后逐页前移。防盗链站点缺失 Referer 会 403。
+      final transport = _CountingTransport({
+        'https://books.test/book/1': _detailHtml(),
+        'https://books.test/toc/1': _tocHtml(),
+        'https://books.test/c/1': '''
+          <html><body><div id="content">正文第一页</div>
+          <a id="next" href="/c/1?p=2">下一页</a></body></html>
+        ''',
+        'https://books.test/c/1?p=2': '''
+          <html><body><div id="content">正文第二页</div></body></html>
+        ''',
+      });
+      final runtime = LegadoRuntime(transport: transport);
+      final registered = _source().toRegisteredSource(enabled: true);
+
+      await runtime.getChapters(registered, 'https://books.test/book/1');
+      final tocRequest = transport.requests
+          .firstWhere((r) => r.url.toString() == 'https://books.test/toc/1');
+      expect(tocRequest.referer, 'https://books.test/book/1');
+
+      await runtime.getChapterContent(
+        registered,
+        bookId: 'https://books.test/book/1',
+        chapterId: 'https://books.test/c/1',
+      );
+      final firstPage = transport.requests
+          .firstWhere((r) => r.url.toString() == 'https://books.test/c/1');
+      expect(firstPage.referer, 'https://books.test/book/1');
+      final secondPage = transport.requests.firstWhere(
+        (r) => r.url.toString() == 'https://books.test/c/1?p=2',
+      );
+      expect(secondPage.referer, 'https://books.test/c/1');
+    });
   });
 }
 

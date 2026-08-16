@@ -20,6 +20,7 @@ class LegadoRequestTemplate {
     required this.headers,
     required this.charset,
     this.body,
+    this.referer,
   });
 
   final Uri url;
@@ -28,11 +29,17 @@ class LegadoRequestTemplate {
   final String charset;
   final String? body;
 
+  /// 页面链路的来源页地址（目录页 Referer=详情页、正文页
+  /// Referer=目录页）。防盗链站点校验 Referer，缺失直接 403。
+  /// 仅当书源 headers 未显式声明 Referer 时在发送层补上。
+  final String? referer;
+
   static LegadoRequestTemplate parse(
     String template, {
     required Uri baseUri,
     Map<String, String> variables = const {},
     Map<String, String> sourceHeaders = const {},
+    String? referer,
   }) {
     final expanded = _expandVariables(template.trim(), variables);
     if (_unresolvedVariables.hasMatch(expanded)) {
@@ -166,6 +173,7 @@ class LegadoRequestTemplate {
       headers: Map.unmodifiable(headers),
       charset: effectiveCharset,
       body: body as String?,
+      referer: referer,
     );
   }
 }
@@ -289,6 +297,15 @@ class LegadoHttpTransport implements LegadoTransport {
         (name) => name.toLowerCase() == 'user-agent',
       )) {
         mergedHeaders['User-Agent'] = defaultLegadoUserAgent;
+      }
+      // 防盗链 Referer：目录/正文页常校验来源页，缺失直接 403。
+      // 书源 headers 显式声明的 Referer 优先，不被覆盖。
+      if (request.referer != null &&
+          request.referer!.isNotEmpty &&
+          !mergedHeaders.keys.any(
+            (name) => name.toLowerCase() == 'referer',
+          )) {
+        mergedHeaders['Referer'] = request.referer!;
       }
       final cookieHeader = jar.headerFor(current, manualCookie: manualCookie);
       if (cookieHeader.isNotEmpty) mergedHeaders['Cookie'] = cookieHeader;
