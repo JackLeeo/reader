@@ -4,6 +4,7 @@
 
 import 'dart:convert';
 
+import 'package:html/dom.dart' as dom;
 import 'package:html/dom.dart';
 import 'package:html/parser.dart' as html_parser;
 
@@ -33,6 +34,17 @@ class LegadoRuleDocument {
 
   final Object? value;
   final Uri baseUri;
+
+  /// 当 value 是 HTML Document 时,对其根执行 querySelectorAll;非 HTML 时返回空列表。
+  List<dom.Element> querySelectorAll(String selector) {
+    final v = value;
+    if (v is! dom.Document) return const [];
+    try {
+      return v.querySelectorAll(selector);
+    } on Object {
+      return const [];
+    }
+  }
 }
 
 class LegadoRuleEngine {

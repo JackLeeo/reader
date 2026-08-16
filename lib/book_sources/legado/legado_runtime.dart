@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:crypto/crypto.dart';
+import 'package:html/dom.dart' as dom;
 import 'package:html/dom.dart' show Element;
 
 import '../../core/reader/chapter_heading_library.dart';
@@ -446,6 +447,22 @@ class LegadoRuntime {
       final chapterNameRule = _optionalRule(rule, 'chapterName');
       final chapterUrlRule = _optionalRule(rule, 'chapterUrl');
       final diagnostic = attempts.isEmpty ? '(no attempts made)' : attempts.join(' | ');
+      // 把详情页/目录页的 HTML 特征(前1500字符+DOM id/class 汇总)记录到诊断日志,
+      // 便于事后判断是规则不匹配还是页面结构完全不同。
+      var domSnippet = '';
+      try {
+        final cached = _cachedDetailPage(bookId);
+        final body = cached?.body ?? '';
+        if (body.isNotEmpty) {
+          final snippet = body.length > 1500
+              ? '${body.substring(0, 1500)}...[truncated ${body.length}]'
+              : body;
+          final signals = _extractDomSignals(body);
+          domSnippet = '\npage snippet: $snippet\npage dom signals: $signals';
+        }
+      } on Object {
+        domSnippet = '\n(page capture failed)';
+      }
       _log(
         source,
         SourceDiagOp.chapters,
@@ -455,7 +472,7 @@ class LegadoRuntime {
             'chapterListRule=${chapterListRule.isEmpty ? "(missing)" : chapterListRule}\n'
             'chapterNameRule=${chapterNameRule.isEmpty ? "(missing)" : chapterNameRule}\n'
             'chapterUrlRule=${chapterUrlRule.isEmpty ? "(missing)" : chapterUrlRule}\n'
-            'attempts=$diagnostic',
+            'attempts=$diagnostic$domSnippet',
       );
       throw BookSourceProtocolException(
         'Compatible source did not return any chapters.\n'
@@ -562,14 +579,29 @@ class LegadoRuntime {
             sourceUrl: source.url,
           );
         }
-        // chapterUrl 规则缺失时，尝试从 context 元素的 href 属性自动获取。
-        // chapterList 通常选择的就是 <a> 标签，href 就是章节地址。
+        // chapterUrl 规则缺失时的多级回退：
+        // 1. 如果 context 是 Element 且自己有 href → 直接用
+        // 2. 否则在 context 内部找第一个带 href 的 <a> 标签
         if (url.isEmpty && context is Element) {
-          final href = context.attributes['href'];
-          if (href != null && href.isNotEmpty) {
-            final resolved = document.baseUri.resolve(href);
+          final selfHref = context.attributes['href'];
+          if (selfHref != null && selfHref.isNotEmpty) {
+            final resolved = document.baseUri.resolve(selfHref);
             if (resolved.scheme == 'http' || resolved.scheme == 'https') {
               url = resolved.toString();
+            }
+          }
+          if (url.isEmpty) {
+            final firstAnchor =
+                context.querySelectorAll('a[href]').where((a) {
+              final h = a.attributes['href'];
+              return h != null && h.isNotEmpty;
+            }).firstOrNull;
+            if (firstAnchor != null) {
+              final href = firstAnchor.attributes['href']!;
+              final resolved = document.baseUri.resolve(href);
+              if (resolved.scheme == 'http' || resolved.scheme == 'https') {
+                url = resolved.toString();
+              }
             }
           }
         }
@@ -723,6 +755,8 @@ class LegadoRuntime {
     var hop = 0;
     var httpOk = false;
     var contentRuleHits = 0;
+    LegadoRuleDocument? lastDocument;
+    String? lastRawBody;
     for (; hop < _maxPageHops && nextUrl.isNotEmpty; hop++) {
       if (!seenPages.add(nextUrl)) break;
       final LegadoResponse response;
@@ -752,6 +786,7 @@ class LegadoRuntime {
       }
       lastFinalUri = response.finalUri;
       pageReferer = response.finalUri.toString();
+      lastRawBody = response.body;
       final document = LegadoRuleDocument.parse(
         response.body,
         response.finalUri,
@@ -781,10 +816,66 @@ class LegadoRuntime {
       );
       // yuedu_hd 行为：解析出的"下一页"就是下一章的地址时，
       // 说明本章已到末尾，停止抓取避免把下一章内容并入本章。
+      lastDocument = document;
       if (nextChapterId != null &&
           nextChapterId.isNotEmpty &&
           nextUrl == nextChapterId) {
         break;
+      }
+    }
+    // 规则 0 命中时 fallback:按常见正文容器列表逐试(常见 40 个)。
+    // 只有 text 类型源尝试,避免污染漫画/听书 fallback(它们是用 URL 列表而非 DOM 文本)。
+    if (parts.isEmpty && source.type == 0 && lastDocument != null && httpOk) {
+      final rootDocument = lastDocument;
+      _log(
+        source,
+        SourceDiagOp.fallback,
+        SourceDiagLevel.warn,
+        'content fallback triggered: contentRuleHits=$contentRuleHits '
+        'trying common content containers',
+        details: 'contentRule=${contentRule.isEmpty ? "(missing)" : contentRule}\n'
+            'chapterId=$chapterId',
+      );
+      final candidates = <String>[];
+      for (final selector in _kContentContainerCandidates) {
+        try {
+          final elems = rootDocument.querySelectorAll(selector);
+          for (final el in elems) {
+            final text = el.nodes
+                .whereType<dom.Text>()
+                .map((n) => n.data)
+                .join()
+                .trim();
+            if (text.length > 200) candidates.add(text);
+          }
+          if (candidates.isNotEmpty) break;
+        } on Object {
+          continue;
+        }
+      }
+      if (candidates.isNotEmpty) {
+        // 优先取最长的一段（通常就是正文），短的可能是侧栏。
+        candidates.sort((a, b) => b.length.compareTo(a.length));
+        parts.add(candidates.first);
+        int matchedIndex = -1;
+        for (var i = 0; i < _kContentContainerCandidates.length; i++) {
+          try {
+            if (rootDocument.querySelectorAll(_kContentContainerCandidates[i]).isNotEmpty) {
+              matchedIndex = i;
+              break;
+            }
+          } on Object {
+            continue;
+          }
+        }
+        _log(
+          source,
+          SourceDiagOp.fallback,
+          SourceDiagLevel.info,
+          'content fallback recovered ${candidates.first.length} chars',
+          details: 'matched selector index=$matchedIndex '
+              '(${matchedIndex >= 0 ? _kContentContainerCandidates[matchedIndex] : "unknown"})',
+        );
       }
     }
     if (parts.isEmpty) {
@@ -793,6 +884,22 @@ class LegadoRuntime {
         'httpOk=$httpOk',
         'contentRuleHits=$contentRuleHits',
       ].join(' ');
+      // 正文提取为 0 时记录响应体片段和 DOM 特征,
+      // 这是用户反馈最多的"不显示内容",有了 snippet 才能判断是
+      // 反爬返回空白页还是 CSS 选择器写错。
+      var domSnippet = '';
+      try {
+        final body = lastRawBody ?? '';
+        if (body.isNotEmpty) {
+          final snippet = body.length > 1500
+              ? '${body.substring(0, 1500)}...[truncated ${body.length}]'
+              : body;
+          final signals = _extractDomSignals(body);
+          domSnippet = '\npage snippet: $snippet\npage dom signals: $signals';
+        }
+      } on Object {
+        domSnippet = '\n(page capture failed)';
+      }
       _log(
         source,
         SourceDiagOp.content,
@@ -801,7 +908,7 @@ class LegadoRuntime {
         details: 'bookId=$bookId\nhops=$hop httpOk=$httpOk contentRuleHits=$contentRuleHits\n'
             'contentRule=${contentRule.isEmpty ? "(missing)" : contentRule}\n'
             'nextContentUrlRule=${nextUrlRule.isEmpty ? "(missing)" : nextUrlRule}\n'
-            'chapterId(=firstPageUrl)=$chapterId',
+            'chapterId(=firstPageUrl)=$chapterId$domSnippet',
       );
       throw BookSourceProtocolException(
         'Compatible source did not return chapter content.\n'
@@ -1431,3 +1538,76 @@ class _FallbackChapterCandidate {
   final String url;
   final int pageDepth;
 }
+
+/// 从 DOM 中提取关键结构特征（id 和 class 的前 40 条高频命中），
+/// 用于诊断：当规则完全不匹配时，开发者能一眼看出现页的真实结构。
+String _extractDomSignals(String body, {int limit = 40}) {
+  final hits = <String, int>{};
+  // id="xxx"
+  final idMatches = RegExp(r'''id\s*=\s*["']([\w\-:]+)["']''').allMatches(body);
+  for (final m in idMatches) {
+    final v = m.group(1)!;
+    hits['#$v'] = (hits['#$v'] ?? 0) + 1;
+  }
+  // class="xxx" (按空格拆分单词，每个 class 单独记)
+  final classMatches =
+      RegExp(r'''class\s*=\s*["']([^"']+)["']''').allMatches(body);
+  for (final m in classMatches) {
+    final classes = m.group(1)!.split(RegExp(r'\s+'));
+    for (final c in classes) {
+      if (c.isEmpty) continue;
+      hits['.$c'] = (hits['.$c'] ?? 0) + 1;
+    }
+  }
+  final sorted = hits.entries.toList()
+    ..sort((a, b) => b.value.compareTo(a.value));
+  final out = <String>[];
+  for (final e in sorted.take(limit)) {
+    out.add('${e.key}×${e.value}');
+  }
+  return out.join(', ');
+}
+
+/// 正文容器 fallback 的候选列表：Legado 生态中最常见的正文容器 id/class。
+const List<String> _kContentContainerCandidates = [
+  '#content',
+  '#contents',
+  '#content1',
+  '#BookText',
+  '#htmlContent',
+  '#contentBody',
+  '#content_body',
+  '#chaptercontent',
+  '#chapterContent',
+  '#articlecontent',
+  '#contentDetail',
+  '#cont_5336',
+  '#nr1',
+  '#nr',
+  '#contenttext',
+  '#read_t2k_txt',
+  '#main-container',
+  '#content-txt',
+  '#chapter_content',
+  '#content_detail',
+  '.content',
+  '.book-content',
+  '.read-content',
+  '.showtxt',
+  '.txtContent',
+  '.content-body',
+  '.contentbox',
+  '.content_text',
+  '.read-box',
+  '.BookRead',
+  '.nr1',
+  '.nr',
+  '.read-container',
+  '.article-content',
+  '#reading-content',
+  '.chapter-content',
+  '.content_main',
+  '.text-content',
+  '#text',
+  '.reader-box',
+];
