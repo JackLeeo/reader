@@ -28,16 +28,10 @@ void main() {
     );
 
     final preferences = await SharedPreferences.getInstance();
-    expect(
-      preferences.getBool('builtin_book_sources_preloaded_v1'),
-      isTrue,
-    );
+    expect(preferences.getBool('builtin_book_sources_preloaded_v1'), isTrue);
 
     // 第二次调用应直接跳过：清空注册表后重新预装不应再次导入。
-    await preferences.setString(
-      'open_reading_book_sources_v1',
-      '[]',
-    );
+    await preferences.setString('open_reading_book_sources_v1', '[]');
     await BuiltinBookSourcePreloader.ensurePreloaded(registry: registry);
     expect(await registry.load(), isEmpty);
   });

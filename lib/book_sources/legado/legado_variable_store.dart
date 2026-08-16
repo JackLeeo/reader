@@ -62,10 +62,7 @@ class LegadoVariableSyntax {
 
   /// 展开 URL/规则文本中的 `@get:{name}`。
   /// 未命中的变量保持原样（由调用方决定是否报错）。
-  static String expandGets(
-    String input,
-    String Function(String name) lookup,
-  ) {
+  static String expandGets(String input, String Function(String name) lookup) {
     if (!input.contains('@get:')) return input;
     return input.replaceAllMapped(getPattern, (match) {
       final value = lookup(match.group(1)!.trim());

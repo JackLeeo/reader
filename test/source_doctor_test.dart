@@ -38,9 +38,12 @@ bool _doctorEnabled() {
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  test('source doctor', () async {
-    await runSourceDoctor();
-  },
-      skip: _doctorEnabled() ? false : '设 tool/doctor_config.json "run":true 启用',
-      timeout: const Timeout(Duration(minutes: 40)));
+  test(
+    'source doctor',
+    () async {
+      await runSourceDoctor();
+    },
+    skip: _doctorEnabled() ? false : '设 tool/doctor_config.json "run":true 启用',
+    timeout: const Timeout(Duration(minutes: 40)),
+  );
 }

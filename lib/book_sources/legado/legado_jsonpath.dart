@@ -55,7 +55,7 @@ class LegadoJsonPath {
         index = nameMatch.end;
         continue;
       }
-      if (char == '*' ) {
+      if (char == '*') {
         tokens.add(const _JsonToken.wildcard());
         index++;
         continue;
@@ -146,7 +146,8 @@ class LegadoJsonPath {
       case _JsonTokenKind.child:
         return [
           for (final value in values)
-            if (value is Map && value.containsKey(token.text)) value[token.text],
+            if (value is Map && value.containsKey(token.text))
+              value[token.text],
         ];
       case _JsonTokenKind.wildcard:
         return [
@@ -183,9 +184,7 @@ class LegadoJsonPath {
             if (value is List) ..._slice(value, token.text!),
         ];
       case _JsonTokenKind.recursiveWildcard:
-        return [
-          for (final value in values) ..._collectAll(value),
-        ];
+        return [for (final value in values) ..._collectAll(value)];
       case _JsonTokenKind.filter:
         return [
           for (final value in values)
@@ -200,9 +199,7 @@ class LegadoJsonPath {
             for (final value in values) ..._collectByKey(value, token.text!),
           ];
         }
-        return [
-          for (final value in values) ..._collectAll(value),
-        ];
+        return [for (final value in values) ..._collectAll(value)];
     }
   }
 

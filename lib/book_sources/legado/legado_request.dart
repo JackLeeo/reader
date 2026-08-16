@@ -146,8 +146,7 @@ class LegadoRequestTemplate {
     }
     // 部分书源显式写 "charset": ""，空值与未声明一样回退 utf-8；
     // "escape" 是 Legado 的 URL 参数编码方式而非字符集，按 utf-8 处理。
-    final charset =
-        '${options['charset'] ?? ''}'.trim().toLowerCase();
+    final charset = '${options['charset'] ?? ''}'.trim().toLowerCase();
     final effectiveCharset = charset.isEmpty || charset == 'escape'
         ? 'utf-8'
         : charset;
@@ -295,7 +294,13 @@ class LegadoHttpTransport implements LegadoTransport {
       if (cookieHeader.isNotEmpty) mergedHeaders['Cookie'] = cookieHeader;
       Response<List<int>>? response;
       try {
-        response = await _attempt(current, request, method, body, mergedHeaders);
+        response = await _attempt(
+          current,
+          request,
+          method,
+          body,
+          mergedHeaders,
+        );
       } on DioException catch (error) {
         // 连接类失败重试一次：聚合并发下的偶发连接被拒/超时。
         if (!_isRetryableConnectionError(error)) {
@@ -409,15 +414,8 @@ final _unresolvedVariables = RegExp(r'\{\{[^{}]+\}\}');
 final _unresolvedGetSyntax = RegExp(r'@get:\{[^{}]*\}');
 // `@put:` 不在此列：URL 模板里的 @put:{name:value} 由 runtime 的
 // _expandTemplate 先行展开/剥离（原版 Legado 语义），不应按脚本拦截。
-final _unsupportedRequestSyntax = RegExp(
-  r'@js:|<js>',
-  caseSensitive: false,
-);
-const _forbiddenHeaders = {
-  'host',
-  'content-length',
-  'transfer-encoding',
-};
+final _unsupportedRequestSyntax = RegExp(r'@js:|<js>', caseSensitive: false);
+const _forbiddenHeaders = {'host', 'content-length', 'transfer-encoding'};
 
 String _expandVariables(String input, Map<String, String> variables) {
   return input.replaceAllMapped(RegExp(r'\{\{\s*([^{}]+?)\s*\}\}'), (match) {

@@ -206,23 +206,27 @@ class _BookSourcesPageState extends State<BookSourcesPage> {
     void Function(List<_DiscoveryShelf> shelves)? onPartial,
   }) async {
     final shelves = <_DiscoveryShelf>[];
-    await _fetchSourceBatches(_targets('discover'), (source) async {
-      final page = await _client.getDiscovery(source);
-      return page.sections
-          .where((section) => section.items.isNotEmpty)
-          .map(
-            (section) => _DiscoveryShelf(
-              source: source,
-              title: section.title,
-              items: section.items,
-            ),
-          )
-          .toList(growable: false);
-    }, onBatch: (batch) {
-      if (batch.isEmpty) return;
-      shelves.addAll(batch);
-      onPartial?.call(List.unmodifiable(shelves));
-    });
+    await _fetchSourceBatches(
+      _targets('discover'),
+      (source) async {
+        final page = await _client.getDiscovery(source);
+        return page.sections
+            .where((section) => section.items.isNotEmpty)
+            .map(
+              (section) => _DiscoveryShelf(
+                source: source,
+                title: section.title,
+                items: section.items,
+              ),
+            )
+            .toList(growable: false);
+      },
+      onBatch: (batch) {
+        if (batch.isEmpty) return;
+        shelves.addAll(batch);
+        onPartial?.call(List.unmodifiable(shelves));
+      },
+    );
     return shelves;
   }
 
@@ -248,16 +252,20 @@ class _BookSourcesPageState extends State<BookSourcesPage> {
     void Function(List<SourcedBook> books)? onPartial,
   }) async {
     final batches = <List<SourcedBook>>[];
-    await _fetchSourceBatches(_targets('browse'), (source) async {
-      final page = await _client.browse(source, sort: 'latest');
-      return page.items
-          .map((book) => SourcedBook(source: source, book: book))
-          .toList(growable: false);
-    }, onBatch: (batch) {
-      if (batch.isEmpty) return;
-      batches.add(batch);
-      onPartial?.call(BookSourcesPage.interleaveLatestBatches(batches));
-    });
+    await _fetchSourceBatches(
+      _targets('browse'),
+      (source) async {
+        final page = await _client.browse(source, sort: 'latest');
+        return page.items
+            .map((book) => SourcedBook(source: source, book: book))
+            .toList(growable: false);
+      },
+      onBatch: (batch) {
+        if (batch.isEmpty) return;
+        batches.add(batch);
+        onPartial?.call(BookSourcesPage.interleaveLatestBatches(batches));
+      },
+    );
     return BookSourcesPage.interleaveLatestBatches(batches);
   }
 

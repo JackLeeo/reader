@@ -38,21 +38,23 @@ void main() {
   });
 
   group('reading chain fixes', () {
-    test('detail page is fetched once across getBook and getChapters',
-        () async {
-      final transport = _CountingTransport({
-        'https://books.test/book/1': _detailHtml(),
-        'https://books.test/toc/1': _tocHtml(page: 1),
-      });
-      final runtime = LegadoRuntime(transport: transport);
-      final registered = _source().toRegisteredSource(enabled: true);
+    test(
+      'detail page is fetched once across getBook and getChapters',
+      () async {
+        final transport = _CountingTransport({
+          'https://books.test/book/1': _detailHtml(),
+          'https://books.test/toc/1': _tocHtml(page: 1),
+        });
+        final runtime = LegadoRuntime(transport: transport);
+        final registered = _source().toRegisteredSource(enabled: true);
 
-      await runtime.getBook(registered, 'https://books.test/book/1');
-      await runtime.getChapters(registered, 'https://books.test/book/1');
+        await runtime.getBook(registered, 'https://books.test/book/1');
+        await runtime.getChapters(registered, 'https://books.test/book/1');
 
-      expect(transport.requestCount['https://books.test/book/1'], 1);
-      expect(transport.requestCount['https://books.test/toc/1'], 1);
-    });
+        expect(transport.requestCount['https://books.test/book/1'], 1);
+        expect(transport.requestCount['https://books.test/toc/1'], 1);
+      },
+    );
 
     test('pagination 404 keeps chapters from earlier pages', () async {
       final transport = _CountingTransport({
@@ -144,7 +146,10 @@ void main() {
       );
       expect(content.content, contains('第一页'));
       expect(content.content, isNot(contains('不应被抓取')));
-      expect(transport.requestCount.containsKey('https://books.test/c/2'), false);
+      expect(
+        transport.requestCount.containsKey('https://books.test/c/2'),
+        false,
+      );
     });
 
     test('toc page 404 falls back to the detail page catalog', () async {
@@ -186,8 +191,7 @@ void main() {
           </body></html>
         ''',
         // 目录页无 #chapters 结构：chapterList 求值为空。
-        'https://books.test/toc/1':
-            '<html><body><p>空目录页</p></body></html>',
+        'https://books.test/toc/1': '<html><body><p>空目录页</p></body></html>',
       });
       final runtime = LegadoRuntime(transport: transport);
       final registered = _source().toRegisteredSource(enabled: true);
@@ -218,19 +222,13 @@ LegadoBookSource _source({
       'bookUrl': bookUrlRule,
       if (tocUrlRuleInSearch != null) 'tocUrl': tocUrlRuleInSearch,
     },
-    'ruleBookInfo': {
-      'name': 'h1@text',
-      'tocUrl': tocUrl,
-    },
+    'ruleBookInfo': {'name': 'h1@text', 'tocUrl': tocUrl},
     'ruleToc': {
       'chapterList': '#chapters@li',
       'chapterName': 'a@text',
       'chapterUrl': 'a@href',
     },
-    'ruleContent': {
-      'content': '#content@html',
-      'nextContentUrl': '#next@href',
-    },
+    'ruleContent': {'content': '#content@html', 'nextContentUrl': '#next@href'},
   });
 }
 
@@ -244,18 +242,13 @@ LegadoBookSource _contentSource() {
       'name': 'class.name@text',
       'bookUrl': 'tag.a@href',
     },
-    'ruleBookInfo': {
-      'name': 'h1@text',
-    },
+    'ruleBookInfo': {'name': 'h1@text'},
     'ruleToc': {
       'chapterList': '#chapters@li',
       'chapterName': 'a@text',
       'chapterUrl': 'a@href',
     },
-    'ruleContent': {
-      'content': '#content@html',
-      'nextContentUrl': '#next@href',
-    },
+    'ruleContent': {'content': '#content@html', 'nextContentUrl': '#next@href'},
   });
 }
 
@@ -266,7 +259,8 @@ String _detailHtml() => '''
   </body></html>
 ''';
 
-String _tocHtml({int page = 1, String? nextPage}) => '''
+String _tocHtml({int page = 1, String? nextPage}) =>
+    '''
   <html><body>
     <ul id="chapters">
       <li><a href="/c/1">第一章</a></li>

@@ -388,10 +388,7 @@ class _BookSourceAudioChapterViewState
                 textAlign: TextAlign.center,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  color: theme.secondaryText,
-                  fontSize: 14,
-                ),
+                style: TextStyle(color: theme.secondaryText, fontSize: 14),
               ),
               const SizedBox(height: 6),
               Text(
@@ -424,7 +421,10 @@ class _BookSourceAudioChapterViewState
               ],
               Row(
                 children: [
-                  Text(_format(_position), style: TextStyle(color: theme.secondaryText, fontSize: 12)),
+                  Text(
+                    _format(_position),
+                    style: TextStyle(color: theme.secondaryText, fontSize: 12),
+                  ),
                   Expanded(
                     child: Slider(
                       value: _duration.inMilliseconds > 0
@@ -447,7 +447,10 @@ class _BookSourceAudioChapterViewState
                           : null,
                     ),
                   ),
-                  Text(_format(_duration), style: TextStyle(color: theme.secondaryText, fontSize: 12)),
+                  Text(
+                    _format(_duration),
+                    style: TextStyle(color: theme.secondaryText, fontSize: 12),
+                  ),
                 ],
               ),
               const SizedBox(height: 12),

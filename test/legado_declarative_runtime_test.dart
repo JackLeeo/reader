@@ -124,37 +124,43 @@ void main() {
       },
     );
 
-    test('supports basic JSON properties, indexes, wildcard and templates', () async {
-      final document = LegadoRuleDocument.parse(
-        '{"books":[{"id":7,"title":"山海"}]}',
-        Uri.parse('https://api.test/'),
-      );
-      final books = await engine.evaluateList(
-        document,
-        document.value,
-        r'$.books[*]',
-      );
-
-      expect(books, hasLength(1));
-      expect(await engine.evaluateString(document, books.single, r'$.title'), '山海');
-      expect(
-        await engine.evaluateString(
+    test(
+      'supports basic JSON properties, indexes, wildcard and templates',
+      () async {
+        final document = LegadoRuleDocument.parse(
+          '{"books":[{"id":7,"title":"山海"}]}',
+          Uri.parse('https://api.test/'),
+        );
+        final books = await engine.evaluateList(
           document,
           document.value,
-          r'@json:$.books[0].title',
-        ),
-        '山海',
-      );
-      expect(
-        await engine.evaluateString(
-          document,
-          books.single,
-          r'/books/{{$.id}}',
-          resolveUrl: true,
-        ),
-        'https://api.test/books/7',
-      );
-    });
+          r'$.books[*]',
+        );
+
+        expect(books, hasLength(1));
+        expect(
+          await engine.evaluateString(document, books.single, r'$.title'),
+          '山海',
+        );
+        expect(
+          await engine.evaluateString(
+            document,
+            document.value,
+            r'@json:$.books[0].title',
+          ),
+          '山海',
+        );
+        expect(
+          await engine.evaluateString(
+            document,
+            books.single,
+            r'/books/{{$.id}}',
+            resolveUrl: true,
+          ),
+          'https://api.test/books/7',
+        );
+      },
+    );
 
     test(
       'supports CSS attributes, text lookup and regex capture replacement',
@@ -182,9 +188,11 @@ void main() {
           ),
           'https://books.test/next',
         );
-        final paragraph = (await engine
-            .evaluateList(document, document.value, 'p'))
-            .single;
+        final paragraph = (await engine.evaluateList(
+          document,
+          document.value,
+          'p',
+        )).single;
         expect(
           await engine.evaluateString(
             document,
@@ -206,7 +214,10 @@ void main() {
         await engine.evaluateList(document, null, '+@css:.librarylist li'),
         hasLength(1),
       );
-      expect(await engine.evaluateString(document, null, '@css:.name@text'), 'Book');
+      expect(
+        await engine.evaluateString(document, null, '@css:.name@text'),
+        'Book',
+      );
     });
 
     test('supports staged regex lists and numbered capture fields', () async {
@@ -223,7 +234,10 @@ void main() {
       );
 
       expect(chapters, hasLength(2));
-      expect(await engine.evaluateString(document, chapters.first, r'$2'), '第一章');
+      expect(
+        await engine.evaluateString(document, chapters.first, r'$2'),
+        '第一章',
+      );
       expect(
         await engine.evaluateString(
           document,
@@ -255,11 +269,7 @@ void main() {
         '{"data":{"books":[{"title":"甲"},{"title":"乙"}]}}',
         Uri.parse('https://api.test/'),
       );
-      final titles = await engine.evaluateList(
-        json,
-        null,
-        r'$..title',
-      );
+      final titles = await engine.evaluateList(json, null, r'$..title');
       expect(titles.map((value) => '$value'), containsAll(['甲', '乙']));
     });
   });

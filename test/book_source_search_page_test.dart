@@ -20,11 +20,7 @@ void main() {
   });
 
   group('search relevance sorting', () {
-    SourcedBook book(
-      String id,
-      String title,
-      String author,
-    ) => SourcedBook(
+    SourcedBook book(String id, String title, String author) => SourcedBook(
       source: _source(),
       book: BookSourceBook(
         id: id,
@@ -35,26 +31,28 @@ void main() {
       ),
     );
 
-    test('title+author exact match ranks first, then title-only, then partial',
-        () {
-      // 模拟源完成顺序：模糊命中在前，精确命中在后。
-      final items = [
-        book('fuzzy', '圣墟番外篇', '未知作者'),
-        book('title-only', '大主宰', '其他作者'),
-        book('exact', '大主宰', '天蚕土豆'),
-        book('partial', '大主宰之开局签到', '某人'),
-      ];
-      final sorted = SourceSearchPage.sortByRelevanceForTest(
-        items,
-        '大主宰 天蚕土豆',
-      );
-      expect(sorted.map((item) => item.book.id), [
-        'exact', // 书名+作者完全一致
-        'title-only', // 仅书名一致
-        'partial', // 书名包含
-        'fuzzy', // 其它
-      ]);
-    });
+    test(
+      'title+author exact match ranks first, then title-only, then partial',
+      () {
+        // 模拟源完成顺序：模糊命中在前，精确命中在后。
+        final items = [
+          book('fuzzy', '圣墟番外篇', '未知作者'),
+          book('title-only', '大主宰', '其他作者'),
+          book('exact', '大主宰', '天蚕土豆'),
+          book('partial', '大主宰之开局签到', '某人'),
+        ];
+        final sorted = SourceSearchPage.sortByRelevanceForTest(
+          items,
+          '大主宰 天蚕土豆',
+        );
+        expect(sorted.map((item) => item.book.id), [
+          'exact', // 书名+作者完全一致
+          'title-only', // 仅书名一致
+          'partial', // 书名包含
+          'fuzzy', // 其它
+        ]);
+      },
+    );
 
     test('same score keeps arrival order (stable)', () {
       final items = [

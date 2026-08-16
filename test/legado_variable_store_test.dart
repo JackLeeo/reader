@@ -18,12 +18,18 @@ void main() {
       LegadoVariableStore.instance.put('https://a.test', 't', 'token-a');
       LegadoVariableStore.instance.put('https://b.test', 't', 'token-b');
 
-      expect(LegadoVariableStore.instance.get('https://a.test', 't'),
-          'token-a');
-      expect(LegadoVariableStore.instance.get('https://b.test', 't'),
-          'token-b');
-      expect(LegadoVariableStore.instance.get('https://a.test', 'missing'),
-          isNull);
+      expect(
+        LegadoVariableStore.instance.get('https://a.test', 't'),
+        'token-a',
+      );
+      expect(
+        LegadoVariableStore.instance.get('https://b.test', 't'),
+        'token-b',
+      );
+      expect(
+        LegadoVariableStore.instance.get('https://a.test', 'missing'),
+        isNull,
+      );
     });
 
     test('expandGetsStrict keeps unresolved @get intact', () {
@@ -55,32 +61,31 @@ void main() {
       expect(value, 'https://toc.test/1');
     });
 
-    test('put:{name:rule} segment stores value without emitting output',
-        () async {
-      final document = LegadoRuleDocument.parse(
-        '<div class="meta" data-id="9527">书名</div>',
-        Uri.parse('https://vars.test/book/1'),
-      );
-      // 先执行 put 段：把 data-id 存入变量池。
-      await engine.evaluateString(
-        document,
-        null,
-        'class.meta@put:{bookId:data-id}',
-        sourceUrl: sourceUrl,
-      );
-      expect(
-        LegadoVariableStore.instance.get(sourceUrl, 'bookId'),
-        '9527',
-      );
-      // 随后的请求用 @get 取回。
-      final value = await engine.evaluateString(
-        document,
-        null,
-        '@get:{bookId}',
-        sourceUrl: sourceUrl,
-      );
-      expect(value, '9527');
-    });
+    test(
+      'put:{name:rule} segment stores value without emitting output',
+      () async {
+        final document = LegadoRuleDocument.parse(
+          '<div class="meta" data-id="9527">书名</div>',
+          Uri.parse('https://vars.test/book/1'),
+        );
+        // 先执行 put 段：把 data-id 存入变量池。
+        await engine.evaluateString(
+          document,
+          null,
+          'class.meta@put:{bookId:data-id}',
+          sourceUrl: sourceUrl,
+        );
+        expect(LegadoVariableStore.instance.get(sourceUrl, 'bookId'), '9527');
+        // 随后的请求用 @get 取回。
+        final value = await engine.evaluateString(
+          document,
+          null,
+          '@get:{bookId}',
+          sourceUrl: sourceUrl,
+        );
+        expect(value, '9527');
+      },
+    );
   });
 
   group('LegadoCompatibilityScanner rhino detection', () {
@@ -116,7 +121,10 @@ void main() {
         'ruleContent': {'content': 'id.content@text'},
       });
       final report = const LegadoCompatibilityScanner().scan(source);
-      expect(report.issues, isNot(contains(LegadoCompatibilityIssue.rhinoScript)));
+      expect(
+        report.issues,
+        isNot(contains(LegadoCompatibilityIssue.rhinoScript)),
+      );
     });
   });
 }

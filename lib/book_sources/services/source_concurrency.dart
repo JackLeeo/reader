@@ -19,20 +19,18 @@ class BookSourceConcurrencyLimiter {
     final completer = Completer<T>();
     void start() {
       _active++;
-      unawaited(
-        () async {
-          try {
-            completer.complete(await task());
-          } catch (error, stack) {
-            completer.completeError(error, stack);
-          } finally {
-            _active--;
-            if (_pending.isNotEmpty) {
-              _pending.removeAt(0)();
-            }
+      unawaited(() async {
+        try {
+          completer.complete(await task());
+        } catch (error, stack) {
+          completer.completeError(error, stack);
+        } finally {
+          _active--;
+          if (_pending.isNotEmpty) {
+            _pending.removeAt(0)();
           }
-        }(),
-      );
+        }
+      }());
     }
 
     if (_active < maxConcurrent) {

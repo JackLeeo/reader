@@ -44,10 +44,7 @@ class BuiltinBookSourcePreloader {
           continue;
         }
         registered.add(
-          source.toRegisteredSource(
-            enabled: true,
-            readingChainVerified: true,
-          ),
+          source.toRegisteredSource(enabled: true, readingChainVerified: true),
         );
       }
       if (registered.isNotEmpty) {

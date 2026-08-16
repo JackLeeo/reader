@@ -213,28 +213,31 @@ class LegadoXPath {
     for (final predicate in predicates) {
       current = switch (predicate.kind) {
         _PredicateKind.position => _positionFilter(current, predicate.number!),
-        _PredicateKind.last => current.isEmpty
-            ? current
-            : [current.last],
-        _PredicateKind.attributeExists => current
-            .where((node) => node.attributes.containsKey(predicate.name))
-            .toList(),
-        _PredicateKind.attributeEquals => current
-            .where((node) => node.attributes[predicate.name] == predicate.value)
-            .toList(),
-        _PredicateKind.attributeContains => current
-            .where(
-              (node) => (node.attributes[predicate.name] ?? '').contains(
-                predicate.value ?? '',
-              ),
-            )
-            .toList(),
-        _PredicateKind.textContains => current
-            .where((node) => node.text.contains(predicate.value ?? ''))
-            .toList(),
-        _PredicateKind.textEquals => current
-            .where((node) => node.text.trim() == predicate.value)
-            .toList(),
+        _PredicateKind.last => current.isEmpty ? current : [current.last],
+        _PredicateKind.attributeExists =>
+          current
+              .where((node) => node.attributes.containsKey(predicate.name))
+              .toList(),
+        _PredicateKind.attributeEquals =>
+          current
+              .where(
+                (node) => node.attributes[predicate.name] == predicate.value,
+              )
+              .toList(),
+        _PredicateKind.attributeContains =>
+          current
+              .where(
+                (node) => (node.attributes[predicate.name] ?? '').contains(
+                  predicate.value ?? '',
+                ),
+              )
+              .toList(),
+        _PredicateKind.textContains =>
+          current
+              .where((node) => node.text.contains(predicate.value ?? ''))
+              .toList(),
+        _PredicateKind.textEquals =>
+          current.where((node) => node.text.trim() == predicate.value).toList(),
         _PredicateKind.unsupported => current,
       };
     }

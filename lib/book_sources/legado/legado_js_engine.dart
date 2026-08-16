@@ -45,7 +45,8 @@ class LegadoJsEngine {
   static LegadoJsEngine? get instance {
     final unavailableSince = _unavailableSince;
     if (unavailableSince != null) {
-      if (DateTime.now().difference(unavailableSince) < _unavailableRetryAfter) {
+      if (DateTime.now().difference(unavailableSince) <
+          _unavailableRetryAfter) {
         return null;
       }
       // 冷却结束，重置标记重试一次。
@@ -152,8 +153,11 @@ class LegadoJsEngine {
     );
   }
 
-  Future<String> _runUnchecked(String script, int maxHops,
-      {String sourceUrl = ''}) async {
+  Future<String> _runUnchecked(
+    String script,
+    int maxHops, {
+    String sourceUrl = '',
+  }) async {
     final runtime = _runtime;
     if (runtime == null) {
       throw const LegadoJsException('JS runtime is not available.');
@@ -210,7 +214,9 @@ class LegadoJsEngine {
 
   void _collectCookieUpdates(JavascriptRuntime runtime) {
     try {
-      final raw = runtime.evaluate('JSON.stringify(java.__cookieUpdates || {})');
+      final raw = runtime.evaluate(
+        'JSON.stringify(java.__cookieUpdates || {})',
+      );
       if (raw.isError) return;
       final decoded = jsonDecode(raw.stringResult);
       if (decoded is Map && decoded.isNotEmpty) {
@@ -258,7 +264,8 @@ class LegadoJsEngine {
     }
     final url = '${decoded['url'] ?? ''}'.trim();
     final uri = Uri.tryParse(url);
-    if (uri == null || !uri.hasAuthority ||
+    if (uri == null ||
+        !uri.hasAuthority ||
         (uri.scheme != 'http' && uri.scheme != 'https')) {
       throw LegadoJsException('Legado JS requested a non-HTTP URL: $url');
     }
@@ -308,9 +315,7 @@ class LegadoJsEngine {
           : '';
       if (error.type == DioExceptionType.connectionTimeout ||
           error.type == DioExceptionType.receiveTimeout) {
-        throw const LegadoJsException(
-          'Legado JS network request timed out.',
-        );
+        throw const LegadoJsException('Legado JS network request timed out.');
       }
     }
   }

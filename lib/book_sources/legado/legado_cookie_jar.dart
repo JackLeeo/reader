@@ -37,9 +37,9 @@ class LegadoCookieJar {
             .trim();
       }
     }
-    return merged.entries.map((entry) => '${entry.key}=${entry.value}').join(
-      '; ',
-    );
+    return merged.entries
+        .map((entry) => '${entry.key}=${entry.value}')
+        .join('; ');
   }
 
   /// 解析响应 Set-Cookie 头并保存。
@@ -94,7 +94,8 @@ class LegadoCookieJar {
     _scheduleFlush();
   }
 
-  String _domainKey(Uri uri) => (uri.host.isEmpty ? '' : uri.host).toLowerCase();
+  String _domainKey(Uri uri) =>
+      (uri.host.isEmpty ? '' : uri.host).toLowerCase();
 
   List<String> _allParentDomains(Uri uri) {
     final host = _domainKey(uri);

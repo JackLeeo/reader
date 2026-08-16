@@ -254,7 +254,13 @@ class LegadoRuleEngine {
 
     // 变量池语法：整条规则为 @get:{name} 直接取值。
     if (sourceUrl.isNotEmpty && normalized.startsWith('@get:')) {
-      return [LegadoVariableStore.instance.get(sourceUrl, _getVariableName(normalized)) ?? ''];
+      return [
+        LegadoVariableStore.instance.get(
+              sourceUrl,
+              _getVariableName(normalized),
+            ) ??
+            '',
+      ];
     }
 
     // XPath 规则（// 开头）。
@@ -265,8 +271,13 @@ class LegadoRuleEngine {
     if (normalized.toLowerCase().startsWith('@js:') ||
         normalized.startsWith('<js>')) {
       return [
-        await _evaluateJsRule(normalized, document, root, jsVariables,
-            sourceUrl: sourceUrl),
+        await _evaluateJsRule(
+          normalized,
+          document,
+          root,
+          jsVariables,
+          sourceUrl: sourceUrl,
+        ),
       ];
     }
 
@@ -357,10 +368,7 @@ class LegadoRuleEngine {
     try {
       return await engine.evaluateScript(
         code,
-        {
-          ..._baseJsVariables(document, root),
-          ...jsVariables,
-        },
+        {..._baseJsVariables(document, root), ...jsVariables},
         prelude: prelude is String ? prelude : '',
         sourceUrl: sourceUrl,
       );
@@ -398,8 +406,9 @@ class LegadoRuleEngine {
       // 变量存段：put:{name:subrule} —— 先求 subrule 存入变量池，
       // 该段不产出内容（Legado 语义：put 的值通过 @get:{name} 使用）。
       if (sourceUrl.isNotEmpty && segment.startsWith('put:{')) {
-        final putMatch = RegExp(r'^put:\{([^{}:]+):([\s\S]*)\}$')
-            .firstMatch(segment);
+        final putMatch = RegExp(
+          r'^put:\{([^{}:]+):([\s\S]*)\}$',
+        ).firstMatch(segment);
         if (putMatch != null) {
           final name = putMatch.group(1)!.trim();
           final subRule = putMatch.group(2)!.trim();
@@ -411,7 +420,10 @@ class LegadoRuleEngine {
             jsVariables: jsVariables,
             sourceUrl: sourceUrl,
           );
-          final value = stored.map(_stringValue).where((v) => v.isNotEmpty).join();
+          final value = stored
+              .map(_stringValue)
+              .where((v) => v.isNotEmpty)
+              .join();
           if (value.isNotEmpty) {
             LegadoVariableStore.instance.put(sourceUrl, name, value);
           }
@@ -485,9 +497,9 @@ class LegadoRuleEngine {
             selected.add(root);
           }
           selected.addAll(
-            root.querySelectorAll(baseCss).where(
-              (element) => _matchAttrs(element, clause.attrs),
-            ),
+            root
+                .querySelectorAll(baseCss)
+                .where((element) => _matchAttrs(element, clause.attrs)),
           );
         } on FormatException {
           throw BookSourceProtocolException(
@@ -591,16 +603,15 @@ class LegadoRuleEngine {
               .join();
         }
       }
-      result = result.replaceAll(
-        match.group(0)!,
-        replacement,
-      );
+      result = result.replaceAll(match.group(0)!, replacement);
     }
     return result;
   }
 
   /// 形如 `book.title`、`$.data.list`、`key`、`page` 的纯成员访问。
-  static final _plainPath = RegExp(r'''^[A-Za-z_$][\w$]*(\[['"\w$]+'\])?([.][A-Za-z_$][\w$]*)*$''');
+  static final _plainPath = RegExp(
+    r'''^[A-Za-z_$][\w$]*(\[['"\w$]+'\])?([.][A-Za-z_$][\w$]*)*$''',
+  );
 
   bool _isPlainPathExpression(String expression) =>
       _plainPath.hasMatch(expression);
@@ -618,10 +629,7 @@ class LegadoRuleEngine {
     try {
       return await engine.evaluateExpression(
         expression,
-        {
-          ..._baseJsVariables(doc, context),
-          ...jsVariables,
-        },
+        {..._baseJsVariables(doc, context), ...jsVariables},
         prelude: prelude is String ? prelude : '',
         sourceUrl: sourceUrl,
       );
@@ -691,7 +699,11 @@ class _LegacySelector {
 
 /// 从 CSS 里拆出的属性谓词：`[name]`、`[name=value]`、`[name~=value]`。
 class _AttrPredicate {
-  const _AttrPredicate({required this.name, this.value, this.wordMatch = false});
+  const _AttrPredicate({
+    required this.name,
+    this.value,
+    this.wordMatch = false,
+  });
 
   final String name;
   final String? value;
@@ -729,24 +741,25 @@ _AttrClause _splitAttrSelectors(String css) {
     final tilde = body.indexOf('~=');
     final eq = body.indexOf('=');
     if (tilde >= 0 && (eq < 0 || tilde == eq - 1)) {
-      predicates.add(_AttrPredicate(
-        name: _trimQuotes(body.substring(0, tilde).trim()),
-        value: _trimQuotes(body.substring(tilde + 2).trim()),
-        wordMatch: true,
-      ));
+      predicates.add(
+        _AttrPredicate(
+          name: _trimQuotes(body.substring(0, tilde).trim()),
+          value: _trimQuotes(body.substring(tilde + 2).trim()),
+          wordMatch: true,
+        ),
+      );
     } else if (eq >= 0) {
-      predicates.add(_AttrPredicate(
-        name: _trimQuotes(body.substring(0, eq).trim()),
-        value: _trimQuotes(body.substring(eq + 1).trim()),
-      ));
+      predicates.add(
+        _AttrPredicate(
+          name: _trimQuotes(body.substring(0, eq).trim()),
+          value: _trimQuotes(body.substring(eq + 1).trim()),
+        ),
+      );
     } else {
       predicates.add(_AttrPredicate(name: _trimQuotes(body.trim())));
     }
   }
-  return _AttrClause(
-    base: buffer.toString().trim(),
-    attrs: predicates,
-  );
+  return _AttrClause(base: buffer.toString().trim(), attrs: predicates);
 }
 
 String _trimQuotes(String value) {

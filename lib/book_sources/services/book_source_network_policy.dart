@@ -79,11 +79,9 @@ class BookSourceNetworkPolicy {
     // DNS 解析永久挂起、聚合搜索大面积超时。
     // 包装 future 的结果调用方不消费, 必须 ignore 掉, 否则解析失败时
     // 它会以无监听错误完成, 变成 unhandled async error。
-    future
-        .whenComplete(() {
-          _dnsInFlight.remove(host);
-        })
-        .ignore();
+    future.whenComplete(() {
+      _dnsInFlight.remove(host);
+    }).ignore();
     return future;
   }
 
@@ -107,7 +105,9 @@ class BookSourceNetworkPolicy {
       Future<List<InternetAddress>> future, [
       Duration? cap,
     ]) {
-      final capped = cap == null ? future : future.timeout(cap, onTimeout: never);
+      final capped = cap == null
+          ? future
+          : future.timeout(cap, onTimeout: never);
       return capped.catchError((Object _) => never());
     }
 

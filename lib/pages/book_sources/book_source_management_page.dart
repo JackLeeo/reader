@@ -261,9 +261,8 @@ class _BookSourceManagementPageState extends State<BookSourceManagementPage> {
               ],
               selected: {_statusFilter},
               showSelectedIcon: false,
-              onSelectionChanged: (selection) => setState(
-                () => _statusFilter = selection.first,
-              ),
+              onSelectionChanged: (selection) =>
+                  setState(() => _statusFilter = selection.first),
             ),
             const Spacer(),
             Text(
@@ -278,23 +277,24 @@ class _BookSourceManagementPageState extends State<BookSourceManagementPage> {
 
   List<RegisteredBookSource> _filterSources(List<RegisteredBookSource> input) {
     final query = _searchQuery.toLowerCase();
-    var filtered = input.where((source) {
-      if (_statusFilter == _BookSourceStatusFilter.enabled &&
-          !source.enabled) {
-        return false;
-      }
-      if (_statusFilter == _BookSourceStatusFilter.disabled && source.enabled) {
-        return false;
-      }
-      if (query.isEmpty) return true;
-      return source.name.toLowerCase().contains(query) ||
-          source.apiBaseUrl.toString().toLowerCase().contains(query);
-    }).toList(growable: false);
+    var filtered = input
+        .where((source) {
+          if (_statusFilter == _BookSourceStatusFilter.enabled &&
+              !source.enabled) {
+            return false;
+          }
+          if (_statusFilter == _BookSourceStatusFilter.disabled &&
+              source.enabled) {
+            return false;
+          }
+          if (query.isEmpty) return true;
+          return source.name.toLowerCase().contains(query) ||
+              source.apiBaseUrl.toString().toLowerCase().contains(query);
+        })
+        .toList(growable: false);
     // 名称排序让固定顺序不依赖导入顺序，方便肉眼扫读定位。
     filtered = filtered.toList()
-      ..sort(
-        (a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
-      );
+      ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
     return filtered;
   }
 
@@ -325,7 +325,9 @@ class _BookSourceManagementPageState extends State<BookSourceManagementPage> {
             padding: const EdgeInsets.all(28),
             child: Text(
               '没有匹配的书源',
-              style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
             ),
           ),
         ),
