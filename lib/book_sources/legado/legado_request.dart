@@ -302,9 +302,7 @@ class LegadoHttpTransport implements LegadoTransport {
       // 书源 headers 显式声明的 Referer 优先，不被覆盖。
       if (request.referer != null &&
           request.referer!.isNotEmpty &&
-          !mergedHeaders.keys.any(
-            (name) => name.toLowerCase() == 'referer',
-          )) {
+          !mergedHeaders.keys.any((name) => name.toLowerCase() == 'referer')) {
         mergedHeaders['Referer'] = request.referer!;
       }
       final cookieHeader = jar.headerFor(current, manualCookie: manualCookie);

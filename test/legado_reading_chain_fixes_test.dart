@@ -264,8 +264,9 @@ void main() {
       final registered = _source().toRegisteredSource(enabled: true);
 
       await runtime.getChapters(registered, 'https://books.test/book/1');
-      final tocRequest = transport.requests
-          .firstWhere((r) => r.url.toString() == 'https://books.test/toc/1');
+      final tocRequest = transport.requests.firstWhere(
+        (r) => r.url.toString() == 'https://books.test/toc/1',
+      );
       expect(tocRequest.referer, 'https://books.test/book/1');
 
       await runtime.getChapterContent(
@@ -273,8 +274,9 @@ void main() {
         bookId: 'https://books.test/book/1',
         chapterId: 'https://books.test/c/1',
       );
-      final firstPage = transport.requests
-          .firstWhere((r) => r.url.toString() == 'https://books.test/c/1');
+      final firstPage = transport.requests.firstWhere(
+        (r) => r.url.toString() == 'https://books.test/c/1',
+      );
       expect(firstPage.referer, 'https://books.test/book/1');
       final secondPage = transport.requests.firstWhere(
         (r) => r.url.toString() == 'https://books.test/c/1?p=2',
