@@ -765,12 +765,30 @@ class _AttrPredicate {
   const _AttrPredicate({
     required this.name,
     this.value,
-    this.wordMatch = false,
+    this.matchType = _AttrMatchType.exact,
   });
 
   final String name;
   final String? value;
-  final bool wordMatch;
+  final _AttrMatchType matchType;
+}
+
+/// CSS 属性选择器匹配类型。
+enum _AttrMatchType {
+  /// `[a]` — 属性存在即可。
+  exists,
+  /// `[a=v]` — 精确匹配。
+  exact,
+  /// `[a~=v]` — 空白分词后包含。
+  word,
+  /// `[a^=v]` — 前缀匹配。
+  prefix,
+  /// `[a$=v]` — 后缀匹配。
+  suffix,
+  /// `[a*=v]` — 子串匹配。
+  substring,
+  /// `[a|=v]` — dash 匹配（前缀 + `-` 分隔）。
+  dash,
 }
 
 class _AttrClause {
@@ -801,25 +819,54 @@ _AttrClause _splitAttrSelectors(String css) {
     }
     final body = css.substring(i + 1, close);
     i = close;
-    final tilde = body.indexOf('~=');
-    final eq = body.indexOf('=');
-    if (tilde >= 0 && (eq < 0 || tilde == eq - 1)) {
+
+    // 检测 CSS 属性选择器操作符：$= ^= *= |= ~= =
+    // 必须按两字符操作符优先于单字符 = 的顺序检测。
+    var matchType = _AttrMatchType.exact;
+    var opIndex = -1;
+    var opLen = 1;
+
+    if (body.contains('\$=')) {
+      opIndex = body.indexOf('\$=');
+      matchType = _AttrMatchType.suffix;
+      opLen = 2;
+    } else if (body.contains('^=')) {
+      opIndex = body.indexOf('^=');
+      matchType = _AttrMatchType.prefix;
+      opLen = 2;
+    } else if (body.contains('*=')) {
+      opIndex = body.indexOf('*=');
+      matchType = _AttrMatchType.substring;
+      opLen = 2;
+    } else if (body.contains('|=')) {
+      opIndex = body.indexOf('|=');
+      matchType = _AttrMatchType.dash;
+      opLen = 2;
+    } else if (body.contains('~=')) {
+      opIndex = body.indexOf('~=');
+      matchType = _AttrMatchType.word;
+      opLen = 2;
+    } else if (body.contains('=')) {
+      opIndex = body.indexOf('=');
+      matchType = _AttrMatchType.exact;
+      opLen = 1;
+    }
+
+    if (opIndex >= 0) {
       predicates.add(
         _AttrPredicate(
-          name: _trimQuotes(body.substring(0, tilde).trim()),
-          value: _trimQuotes(body.substring(tilde + 2).trim()),
-          wordMatch: true,
-        ),
-      );
-    } else if (eq >= 0) {
-      predicates.add(
-        _AttrPredicate(
-          name: _trimQuotes(body.substring(0, eq).trim()),
-          value: _trimQuotes(body.substring(eq + 1).trim()),
+          name: _trimQuotes(body.substring(0, opIndex).trim()),
+          value: _trimQuotes(body.substring(opIndex + opLen).trim()),
+          matchType: matchType,
         ),
       );
     } else {
-      predicates.add(_AttrPredicate(name: _trimQuotes(body.trim())));
+      predicates.add(
+        _AttrPredicate(
+          name: _trimQuotes(body.trim()),
+          matchType: _AttrMatchType.exists,
+        ),
+      );
     }
   }
   return _AttrClause(base: buffer.toString().trim(), attrs: predicates);
@@ -839,11 +886,33 @@ bool _matchAttrs(Element element, List<_AttrPredicate> attrs) {
     final raw = element.attributes[predicate.name];
     if (raw == null) return false;
     final value = predicate.value;
-    if (value == null) continue;
-    if (predicate.wordMatch) {
-      if (!raw.split(RegExp(r'\s+')).contains(value)) return false;
-    } else if (raw.trim() != value) {
-      return false;
+    if (value == null) continue; // exists — 属性存在即可
+    switch (predicate.matchType) {
+      case _AttrMatchType.exists:
+        break;
+      case _AttrMatchType.exact:
+        if (raw.trim() != value) return false;
+        break;
+      case _AttrMatchType.word:
+        if (!raw.split(RegExp(r'\s+')).contains(value)) return false;
+        break;
+      case _AttrMatchType.prefix:
+        if (!raw.trim().startsWith(value)) return false;
+        break;
+      case _AttrMatchType.suffix:
+        if (!raw.trim().endsWith(value)) return false;
+        break;
+      case _AttrMatchType.substring:
+        if (!raw.trim().contains(value)) return false;
+        break;
+      case _AttrMatchType.dash:
+        final trimmed = raw.trim();
+        if (!trimmed.startsWith(value)) return false;
+        if (trimmed.length > value.length &&
+            trimmed[value.length] != '-') {
+          return false;
+        }
+        break;
     }
   }
   return true;

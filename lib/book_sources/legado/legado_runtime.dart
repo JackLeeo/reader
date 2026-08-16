@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:crypto/crypto.dart';
+import 'package:html/dom.dart' show Element;
 
 import '../../core/reader/chapter_heading_library.dart';
 import '../../services/core/source_diagnostic_logger.dart';
@@ -540,6 +541,7 @@ class LegadoRuntime {
         contexts = const [];
       }
       chapterListHits += contexts.length;
+      final chapterUrlRule = _optionalRule(rule, 'chapterUrl');
       for (final context in contexts) {
         final title = await _value(
           document,
@@ -549,14 +551,28 @@ class LegadoRuntime {
           jsVariables: vars,
           sourceUrl: source.url,
         );
-        final url = await _url(
-          document,
-          context,
-          rule,
-          'chapterUrl',
-          jsVariables: vars,
-          sourceUrl: source.url,
-        );
+        var url = '';
+        if (chapterUrlRule.isNotEmpty) {
+          url = await _url(
+            document,
+            context,
+            rule,
+            'chapterUrl',
+            jsVariables: vars,
+            sourceUrl: source.url,
+          );
+        }
+        // chapterUrl 规则缺失时，尝试从 context 元素的 href 属性自动获取。
+        // chapterList 通常选择的就是 <a> 标签，href 就是章节地址。
+        if (url.isEmpty && context is Element) {
+          final href = context.attributes['href'];
+          if (href != null && href.isNotEmpty) {
+            final resolved = document.baseUri.resolve(href);
+            if (resolved.scheme == 'http' || resolved.scheme == 'https') {
+              url = resolved.toString();
+            }
+          }
+        }
         if (title.isEmpty || url.isEmpty || !seenChapters.add(url)) continue;
         if (chapters.length >= _maxChapters) {
           throw const BookSourceProtocolException(
