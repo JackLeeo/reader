@@ -3043,6 +3043,16 @@ class AppLocalizationsEn extends AppLocalizations {
   String get toggleNightMode => 'Toggle night mode';
 
   @override
+  String get readerSwitchSource => 'Switch source';
+
+  @override
+  String get switchSourceSearching => 'Searching other sources';
+
+  @override
+  String get switchSourceNoResults =>
+      'This book was not found in other sources';
+
+  @override
   String get readerThemePureBlack => 'Pure black';
 
   @override

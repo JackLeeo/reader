@@ -473,6 +473,7 @@ class BookSourceClient {
     RegisteredBookSource source, {
     required String bookId,
     required String chapterId,
+    String? nextChapterId,
   }) async {
     if (source.sourceProtocol == BookSourceProtocolKind.legado) {
       await _ensureAdditionalProtocolsEnabled();
@@ -480,6 +481,7 @@ class BookSourceClient {
         source,
         bookId: bookId,
         chapterId: chapterId,
+        nextChapterId: nextChapterId,
       );
     }
     return _chapterCache.getOrLoad(

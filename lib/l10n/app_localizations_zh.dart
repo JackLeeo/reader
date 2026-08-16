@@ -2901,6 +2901,15 @@ class AppLocalizationsZh extends AppLocalizations {
   String get toggleNightMode => '切换夜间模式';
 
   @override
+  String get readerSwitchSource => '换源';
+
+  @override
+  String get switchSourceSearching => '正在搜索其它书源';
+
+  @override
+  String get switchSourceNoResults => '未在其它书源找到本书';
+
+  @override
   String get readerThemePureBlack => '纯黑';
 
   @override
@@ -7080,6 +7089,15 @@ class AppLocalizationsZhTw extends AppLocalizationsZh {
 
   @override
   String get toggleNightMode => '切換夜間模式';
+
+  @override
+  String get readerSwitchSource => '換源';
+
+  @override
+  String get switchSourceSearching => '正在搜尋其它書源';
+
+  @override
+  String get switchSourceNoResults => '未在其它書源找到本書';
 
   @override
   String get readerThemePureBlack => '純黑';

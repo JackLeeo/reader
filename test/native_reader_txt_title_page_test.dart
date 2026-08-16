@@ -69,7 +69,7 @@ void main() {
     messenger.setMockMethodCallHandler(readerStatusChannel, null);
     messenger.setMockMethodCallHandler(pathProviderChannel, null);
     if (temporaryDirectory.existsSync()) {
-      temporaryDirectory.deleteSync(recursive: true);
+      _deleteWithRetry(temporaryDirectory);
     }
   });
 
@@ -637,6 +637,20 @@ class _ControllableAppSettingsNotifier extends AppSettingsNotifier {
 Finder _richTextContaining(String text) => find.byWidgetPredicate(
   (widget) => widget is RichText && widget.text.toPlainText().contains(text),
 );
+
+/// Windows 下后台异步写文件（日志/数据库）与 tearDown 清理存在竞态，
+/// 直接 deleteSync 会抛 errno 145（目录非空）/32（文件占用）。
+/// 带短重试的删除兜底，避免测试环境抖动。
+void _deleteWithRetry(Directory directory) {
+  for (var attempt = 0; attempt < 5; attempt++) {
+    try {
+      if (directory.existsSync()) directory.deleteSync(recursive: true);
+      return;
+    } on FileSystemException {
+      sleep(const Duration(milliseconds: 120));
+    }
+  }
+}
 
 Future<void> _pumpUntilFound(WidgetTester tester, Finder finder) async {
   for (var attempt = 0; attempt < 60; attempt++) {

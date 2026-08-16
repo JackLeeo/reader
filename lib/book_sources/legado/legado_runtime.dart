@@ -113,12 +113,15 @@ class LegadoRuntime {
         'This source does not support categories.',
       );
     }
-    return entries.take(_maxExploreEntriesPerSource).map((entry) {
-      return BookSourceCategory(
-        id: entry.url,
-        name: entry.title.isEmpty ? entry.url : entry.title,
-      );
-    }).toList(growable: false);
+    return entries
+        .take(_maxExploreEntriesPerSource)
+        .map((entry) {
+          return BookSourceCategory(
+            id: entry.url,
+            name: entry.title.isEmpty ? entry.url : entry.title,
+          );
+        })
+        .toList(growable: false);
   }
 
   /// 浏览：按发现入口地址拉取书籍列表。
@@ -287,13 +290,40 @@ class LegadoRuntime {
     await _ensureRunnable(source);
     final vars = _jsVariables(source);
     final tocUrl = await _tocUrl(source, bookId);
+    var chapters = const <BookSourceChapter>[];
+    // tocRule 求值出的目录地址请求失败（404/断连）时回退详情页：
+    // 求值结果可能是非法地址或书名文本，详情页本身常含章节列表。
+    try {
+      chapters = await _fetchChapterPages(source, tocUrl, vars);
+    } on BookSourceProtocolException {
+      if (tocUrl == bookId) rethrow;
+    }
+    // 目录页解析不出章节时也回退详情页再解析一次（tocUrl 求值
+    // 指向了非目录页面的常见容错，详见 yuedu_hd 同类回退）。
+    if (chapters.isEmpty && tocUrl != bookId) {
+      chapters = await _fetchChapterPages(source, bookId, vars);
+    }
+    if (chapters.isEmpty) {
+      throw const BookSourceProtocolException(
+        'Compatible source did not return any chapters.',
+      );
+    }
+    return chapters;
+  }
+
+  /// 从 [startUrl] 开始按 nextTocUrl 翻页抓取章节列表。
+  Future<List<BookSourceChapter>> _fetchChapterPages(
+    LegadoBookSource source,
+    String startUrl,
+    Map<String, Object?> vars,
+  ) async {
     final rule = source.rule('ruleToc');
     final chapters = <BookSourceChapter>[];
     final seenPages = <String>{};
     final seenChapters = <String>{};
     // 队列式分页：nextTocUrl 支持逗号多值（对照 yuedu_hd split(',')），
     // 一页可同时派生多个后续页（数字目录/多线路分页源）。
-    final pendingPages = <String>[tocUrl];
+    final pendingPages = <String>[startUrl];
     for (var hop = 0; hop < _maxPageHops && pendingPages.isNotEmpty; hop++) {
       final pageUrl = pendingPages.removeAt(0);
       if (pageUrl.isEmpty || !seenPages.add(pageUrl)) continue;
@@ -360,11 +390,6 @@ class LegadoRuntime {
         if (seenPages.contains(resolved.toString())) continue;
         pendingPages.add(resolved.toString());
       }
-    }
-    if (chapters.isEmpty) {
-      throw const BookSourceProtocolException(
-        'Compatible source did not return any chapters.',
-      );
     }
     return chapters;
   }
@@ -480,8 +505,7 @@ class LegadoRuntime {
         continue;
       }
       uri = baseUri.resolve(cleaned);
-      if (uri.hasAuthority &&
-          (uri.scheme == 'http' || uri.scheme == 'https')) {
+      if (uri.hasAuthority && (uri.scheme == 'http' || uri.scheme == 'https')) {
         urls.add(uri.toString());
         continue;
       }
@@ -545,14 +569,21 @@ class LegadoRuntime {
             jsVariables: vars,
             sourceUrl: source.url,
           )).firstOrNull;
-    final evaluated = await _rules.evaluateString(
-      document,
-      context,
-      tocRule,
-      resolveUrl: false,
-      jsVariables: vars,
-      sourceUrl: source.url,
-    );
+    String evaluated;
+    try {
+      evaluated = await _rules.evaluateString(
+        document,
+        context,
+        tocRule,
+        resolveUrl: false,
+        jsVariables: vars,
+        sourceUrl: source.url,
+      );
+    } catch (_) {
+      // tocUrl 规则求值失败（JS/选择器异常）时回退详情页地址，
+      // 由 getChapters 在详情页上直接解析章节。
+      return bookId;
+    }
     // Legado 语义：tocUrl 求值为空或 `-` 表示目录页即书籍详情页。
     // 此前无此回退，目录规则求空后直接请求空地址，报 404。
     if (evaluated.isEmpty || evaluated.trim() == '-') return bookId;
@@ -716,10 +747,9 @@ class LegadoRuntime {
       // 内联 `<js>...</js>` 段：逐段求值并替换为结果。
       final engine = LegadoJsEngine.instance;
       if (engine != null) {
-        for (final match
-            in RegExp(r'<js>([\s\S]*?)</js>')
-                .allMatches(working)
-                .toList()) {
+        for (final match in RegExp(
+          r'<js>([\s\S]*?)</js>',
+        ).allMatches(working).toList()) {
           try {
             final value = await engine.evaluateExpression(
               match.group(1)!,
@@ -753,7 +783,8 @@ class LegadoRuntime {
         (match) {
           final name = match.group(1)!.trim();
           final literal = match.group(2)!.trim();
-          final isRuleish = literal.contains('@') ||
+          final isRuleish =
+              literal.contains('@') ||
               literal.contains('{{') ||
               literal.contains('//');
           if (name.isNotEmpty &&
@@ -777,9 +808,9 @@ class LegadoRuntime {
             : Uri.encodeQueryComponent(value);
       },
     );
-    final unresolved = RegExp(r'\{\{\s*([^{}]+?)\s*\}\}')
-        .allMatches(expanded)
-        .toList();
+    final unresolved = RegExp(
+      r'\{\{\s*([^{}]+?)\s*\}\}',
+    ).allMatches(expanded).toList();
     if (unresolved.isEmpty) return expanded;
     final engine = LegadoJsEngine.instance;
     if (engine == null) return expanded;
@@ -815,8 +846,7 @@ class LegadoRuntime {
     };
   }
 
-  static String _stringOrEmpty(Object? value) =>
-      value is String ? value : '';
+  static String _stringOrEmpty(Object? value) => value is String ? value : '';
 
   Future<Map<String, String>> _sourceHeaders(LegadoBookSource source) async {
     final raw = source.raw['header'];
@@ -834,11 +864,9 @@ class LegadoRuntime {
           );
         }
         try {
-          final evaluated = await engine.evaluateExpression(
-            '($raw)',
-            {'baseUrl': source.baseUri.toString()},
-            sourceUrl: source.url,
-          );
+          final evaluated = await engine.evaluateExpression('($raw)', {
+            'baseUrl': source.baseUri.toString(),
+          }, sourceUrl: source.url);
           decoded = jsonDecode(evaluated);
         } catch (_) {
           throw const BookSourceProtocolException(

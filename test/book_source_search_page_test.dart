@@ -12,10 +12,59 @@ import 'package:xxread/book_sources/services/book_source_shelf_service.dart';
 import 'package:xxread/l10n/app_localizations.dart';
 import 'package:xxread/pages/book_sources/book_sources_page.dart';
 import 'package:xxread/pages/book_sources/source_search_page.dart';
+import 'package:xxread/pages/book_sources/widgets/sourced_book_widgets.dart';
 
 void main() {
   setUp(() {
     SharedPreferences.setMockInitialValues({});
+  });
+
+  group('search relevance sorting', () {
+    SourcedBook book(
+      String id,
+      String title,
+      String author,
+    ) => SourcedBook(
+      source: _source(),
+      book: BookSourceBook(
+        id: id,
+        title: title,
+        author: author,
+        description: '',
+        categories: const [],
+      ),
+    );
+
+    test('title+author exact match ranks first, then title-only, then partial',
+        () {
+      // 模拟源完成顺序：模糊命中在前，精确命中在后。
+      final items = [
+        book('fuzzy', '圣墟番外篇', '未知作者'),
+        book('title-only', '大主宰', '其他作者'),
+        book('exact', '大主宰', '天蚕土豆'),
+        book('partial', '大主宰之开局签到', '某人'),
+      ];
+      final sorted = SourceSearchPage.sortByRelevanceForTest(
+        items,
+        '大主宰 天蚕土豆',
+      );
+      expect(sorted.map((item) => item.book.id), [
+        'exact', // 书名+作者完全一致
+        'title-only', // 仅书名一致
+        'partial', // 书名包含
+        'fuzzy', // 其它
+      ]);
+    });
+
+    test('same score keeps arrival order (stable)', () {
+      final items = [
+        book('a', '斗破苍穹', '甲'),
+        book('b', '斗破苍穹', '乙'),
+        book('c', '斗破苍穹', '丙'),
+      ];
+      final sorted = SourceSearchPage.sortByRelevanceForTest(items, '斗破苍穹');
+      expect(sorted.map((item) => item.book.id), ['a', 'b', 'c']);
+    });
   });
 
   testWidgets('discover page shows the empty-source call to action', (

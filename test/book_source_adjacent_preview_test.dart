@@ -181,6 +181,7 @@ class _AdjacentPreviewClient extends BookSourceClient {
     RegisteredBookSource source, {
     required String bookId,
     required String chapterId,
+    String? nextChapterId,
   }) async {
     requestedChapterIds.add(chapterId);
     final isPrevious = chapterId == 'chapter-1';

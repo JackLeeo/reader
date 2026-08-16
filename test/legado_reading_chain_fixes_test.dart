@@ -146,6 +146,59 @@ void main() {
       expect(content.content, isNot(contains('不应被抓取')));
       expect(transport.requestCount.containsKey('https://books.test/c/2'), false);
     });
+
+    test('toc page 404 falls back to the detail page catalog', () async {
+      // tocUrl 求值出的目录页 404；详情页自身含章节列表，应回退解析。
+      final transport = _CountingTransport({
+        'https://books.test/book/1': '''
+          <html><body>
+            <h1>详情书名</h1>
+            <a class="toc" href="/toc/1">目录</a>
+            <ul id="chapters">
+              <li><a href="/c/1">第一章</a></li>
+              <li><a href="/c/2">第二章</a></li>
+            </ul>
+          </body></html>
+        ''',
+      });
+      transport.failWith404.add('https://books.test/toc/1');
+      final runtime = LegadoRuntime(transport: transport);
+      final registered = _source().toRegisteredSource(enabled: true);
+
+      final chapters = await runtime.getChapters(
+        registered,
+        'https://books.test/book/1',
+      );
+      expect(chapters, hasLength(2));
+      expect(chapters.first.title, '第一章');
+    });
+
+    test('empty toc page falls back to the detail page catalog', () async {
+      // tocUrl 指向的页面解析不出章节；详情页含章节列表，应回退解析。
+      final transport = _CountingTransport({
+        'https://books.test/book/1': '''
+          <html><body>
+            <h1>详情书名</h1>
+            <a class="toc" href="/toc/1">目录</a>
+            <ul id="chapters">
+              <li><a href="/c/1">第一章</a></li>
+            </ul>
+          </body></html>
+        ''',
+        // 目录页无 #chapters 结构：chapterList 求值为空。
+        'https://books.test/toc/1':
+            '<html><body><p>空目录页</p></body></html>',
+      });
+      final runtime = LegadoRuntime(transport: transport);
+      final registered = _source().toRegisteredSource(enabled: true);
+
+      final chapters = await runtime.getChapters(
+        registered,
+        'https://books.test/book/1',
+      );
+      expect(chapters, hasLength(1));
+      expect(chapters.first.title, '第一章');
+    });
   });
 }
 

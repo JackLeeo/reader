@@ -582,6 +582,7 @@ class _PageModeClient extends BookSourceClient {
     RegisteredBookSource source, {
     required String bookId,
     required String chapterId,
+    String? nextChapterId,
   }) async => BookSourceChapterContent(
     bookId: bookId,
     chapterId: chapterId,
@@ -602,6 +603,7 @@ class _TrackingPageModeClient extends _PageModeClient {
     RegisteredBookSource source, {
     required String bookId,
     required String chapterId,
+    String? nextChapterId,
   }) async {
     requested.add(chapterId);
     return super.getChapterContent(

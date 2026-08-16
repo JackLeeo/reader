@@ -69,6 +69,8 @@ import 'package:xxread/widgets/reader_vertical_paging_surface.dart';
 import 'package:xxread/widgets/side_toast.dart';
 
 import 'book_source_media_views.dart';
+import '../book_sources/source_switch_sheet.dart';
+import '../book_sources/widgets/sourced_book_widgets.dart' show SourcedBook;
 import 'themes/reader_custom_themes_page.dart';
 
 typedef BookSourcePageMode = ReaderPageMode;
@@ -922,11 +924,26 @@ class _BookSourceReaderPageState extends State<BookSourceReaderPage>
     late final Future<BookSourceChapterContent> future;
     final contentFuture = cached != null
         ? Future<BookSourceChapterContent>.value(cached)
-        : _client.getChapterContent(
-            widget.source,
-            bookId: widget.book.id,
-            chapterId: _chapters[index].id,
-          );
+        : _client
+              .getChapterContent(
+                widget.source,
+                bookId: widget.book.id,
+                chapterId: _chapters[index].id,
+                // 相邻章地址用于"下一页=下一章"截断，避免把下一章
+                // 正文并入本章（分页正文的常见误抓）。
+                nextChapterId: index + 1 < _chapters.length
+                    ? _chapters[index + 1].id
+                    : null,
+              )
+              // 硬超时兜底：正文链路含网络 + JS 往返，任何一环挂起
+              // 都会让 _loadingContent 永久为 true、切章 guard 全部
+              // 失效（表现为"一直在加载不显示"）。超时让 UI 恢复到
+              // 可重试的错误态。
+              .timeout(
+                const Duration(seconds: 25),
+                onTimeout: () =>
+                    throw TimeoutException('Chapter content timed out.'),
+              );
     future = contentFuture
         .then((content) async {
           _readableChapterText.remove(index);
@@ -1582,6 +1599,91 @@ class _BookSourceReaderPageState extends State<BookSourceReaderPage>
     final targetThemeId = isNight ? ReaderThemes.day.id : ReaderThemes.night.id;
     await _updateReadingSettings(themeId: targetThemeId);
   }
+
+  /// 手动换源：弹出其它书源中同书候选，选中后加载新目录并按
+  /// 当前章节标题定位，替换当前阅读页。
+  Future<void> _showSwitchSource() async {
+    final target = await showSourceSwitchSheet(
+      context,
+      currentSource: widget.source,
+      title: widget.book.title,
+      author: widget.book.author,
+      client: _client,
+    );
+    if (target == null || !mounted) return;
+    await _switchToSource(target);
+  }
+
+  Future<void> _switchToSource(SourcedBook target) async {
+    setState(() {
+      _loadingContent = true;
+      _content = null;
+      _error = null;
+    });
+    try {
+      final chapters = await _client
+          .getChapters(target.source, target.book.id)
+          .timeout(const Duration(seconds: 20));
+      final matched = _matchChapterIn(chapters);
+      // 预写新源进度，替换后的阅读页按 chapterId 恢复到对应章节。
+      await widget.progressStore.save(
+        sourceId: target.source.id,
+        bookId: target.book.id,
+        progress: BookSourceReadingProgress(
+          chapterId: chapters[matched].id,
+          chapterIndex: matched,
+          chapterProgress: 0,
+          updatedAt: DateTime.now(),
+        ),
+      );
+      if (!mounted) return;
+      await Navigator.of(context).pushReplacement(
+        MaterialPageRoute<void>(
+          builder: (_) => BookSourceReaderPage(
+            source: target.source,
+            book: target.book,
+            client: _client,
+            shelfService: widget.shelfService,
+            initialTheme: _readerTheme,
+          ),
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _loadingContent = false;
+        _error = error;
+        _controlsVisible = true;
+      });
+    }
+  }
+
+  /// 在目标源目录中定位当前章节：精确标题 → 归一化包含 → 进度比例。
+  int _matchChapterIn(List<BookSourceChapter> target) {
+    if (target.isEmpty) return 0;
+    if (_chapters.isEmpty) return 0;
+    final currentIndex = _chapterIndex.clamp(0, _chapters.length - 1);
+    final currentTitle = _normalizeChapterTitle(_chapters[currentIndex].title);
+    if (currentTitle.length >= 2) {
+      for (var i = 0; i < target.length; i++) {
+        if (_normalizeChapterTitle(target[i].title) == currentTitle) return i;
+      }
+      for (var i = 0; i < target.length; i++) {
+        final title = _normalizeChapterTitle(target[i].title);
+        if (title.length >= 2 &&
+            (title.contains(currentTitle) || currentTitle.contains(title))) {
+          return i;
+        }
+      }
+    }
+    return ((_chapterIndex / _chapters.length) * target.length).round().clamp(
+      0,
+      target.length - 1,
+    );
+  }
+
+  static String _normalizeChapterTitle(String title) =>
+      title.replaceAll(RegExp(r'[\s\u3000]+'), '').trim();
 
   Future<void> _updateReadingSettings({
     double? fontSize,
@@ -2284,6 +2386,10 @@ class _BookSourceReaderPageState extends State<BookSourceReaderPage>
                           nightModeTooltip: context.l10n.toggleNightMode,
                           nightModeActive:
                               _readerTheme.brightness == Brightness.dark,
+                          onSwitchSource: _chapters.isEmpty
+                              ? null
+                              : () => unawaited(_showSwitchSource()),
+                          switchSourceTooltip: context.l10n.readerSwitchSource,
                           backTooltip: MaterialLocalizations.of(
                             context,
                           ).backButtonTooltip,
@@ -2381,7 +2487,14 @@ class _BookSourceReaderPageState extends State<BookSourceReaderPage>
       if (!completer.isCompleted) completer.complete();
     };
     listenable.addListener(onChanged);
-    await completer.future;
+    // 超时兜底：动画状态异常（路由动画被 hold/通知丢失）时不能让
+    // 正文应用永久挂起，超过 2s 视为无需推迟。
+    await completer.future.timeout(
+      const Duration(seconds: 2),
+      onTimeout: () {
+        listenable.removeListener(onChanged);
+      },
+    );
     return true;
   }
 

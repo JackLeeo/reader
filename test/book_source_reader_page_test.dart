@@ -1396,6 +1396,7 @@ class _ConfigurableBookSourceClient extends BookSourceClient {
     RegisteredBookSource source, {
     required String bookId,
     required String chapterId,
+    String? nextChapterId,
   }) async {
     requestedChapterIds.add(chapterId);
     return BookSourceChapterContent(
@@ -1429,6 +1430,7 @@ class _DelayedOpeningBookSourceClient extends BookSourceClient {
     RegisteredBookSource source, {
     required String bookId,
     required String chapterId,
+    String? nextChapterId,
   }) async {
     return BookSourceChapterContent(
       bookId: bookId,
@@ -1474,6 +1476,7 @@ class _DelayedThirdChapterClient extends BookSourceClient {
     RegisteredBookSource source, {
     required String bookId,
     required String chapterId,
+    String? nextChapterId,
   }) async {
     requestedChapterIds.add(chapterId);
     if (chapterId == 'chapter-3') return _thirdChapter.future;
@@ -1529,6 +1532,7 @@ class _FakeBookSourceClient extends BookSourceClient {
     RegisteredBookSource source, {
     required String bookId,
     required String chapterId,
+    String? nextChapterId,
   }) async {
     requestedChapterIds.add(chapterId);
     final second = chapterId == 'chapter-2';
@@ -1548,6 +1552,7 @@ class _LongFakeBookSourceClient extends _FakeBookSourceClient {
     RegisteredBookSource source, {
     required String bookId,
     required String chapterId,
+    String? nextChapterId,
   }) async {
     requestedChapterIds.add(chapterId);
     return BookSourceChapterContent(

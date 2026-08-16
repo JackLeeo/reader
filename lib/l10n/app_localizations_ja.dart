@@ -2930,6 +2930,15 @@ class AppLocalizationsJa extends AppLocalizations {
   String get toggleNightMode => '夜間モード切替';
 
   @override
+  String get readerSwitchSource => 'ソース切替';
+
+  @override
+  String get switchSourceSearching => '他のソースを検索中';
+
+  @override
+  String get switchSourceNoResults => '他のソースでこの本が見つかりません';
+
+  @override
   String get readerThemePureBlack => 'ピュアブラック';
 
   @override

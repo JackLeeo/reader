@@ -36,6 +36,8 @@ class ReaderChromeOverlay extends StatelessWidget {
     this.onToggleNightMode,
     this.nightModeTooltip,
     this.nightModeActive = false,
+    this.onSwitchSource,
+    this.switchSourceTooltip,
     this.topKey,
     this.bottomKey,
     this.statusKey,
@@ -74,6 +76,10 @@ class ReaderChromeOverlay extends StatelessWidget {
   final VoidCallback? onToggleNightMode;
   final String? nightModeTooltip;
   final bool nightModeActive;
+
+  /// 手动换源入口（yuedu_hd 风格：阅读中切换同书其它书源）。
+  final VoidCallback? onSwitchSource;
+  final String? switchSourceTooltip;
   final Key? topKey;
   final Key? bottomKey;
   final Key? statusKey;
@@ -261,6 +267,13 @@ class ReaderChromeOverlay extends StatelessWidget {
                           icon: nightModeActive
                               ? Icons.light_mode_outlined
                               : Icons.dark_mode_outlined,
+                        ),
+                      if (onSwitchSource != null)
+                        ReaderControlIconButton(
+                          palette: palette,
+                          onPressed: onSwitchSource,
+                          tooltip: switchSourceTooltip ?? '',
+                          icon: Icons.swap_horiz_rounded,
                         ),
                       if (showSettingsAction)
                         ReaderControlIconButton(

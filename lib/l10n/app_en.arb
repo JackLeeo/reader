@@ -3122,6 +3122,9 @@
     "description": "Night reading theme name"
   },
   "toggleNightMode": "Toggle night mode",
+  "readerSwitchSource": "Switch source",
+  "switchSourceSearching": "Searching other sources",
+  "switchSourceNoResults": "This book was not found in other sources",
   "readerThemePureBlack": "Pure black",
   "@readerThemePureBlack": {
     "description": "Pure black reading theme name"

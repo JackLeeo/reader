@@ -5462,6 +5462,24 @@ abstract class AppLocalizations {
   /// **'Toggle night mode'**
   String get toggleNightMode;
 
+  /// No description provided for @readerSwitchSource.
+  ///
+  /// In en, this message translates to:
+  /// **'Switch source'**
+  String get readerSwitchSource;
+
+  /// No description provided for @switchSourceSearching.
+  ///
+  /// In en, this message translates to:
+  /// **'Searching other sources'**
+  String get switchSourceSearching;
+
+  /// No description provided for @switchSourceNoResults.
+  ///
+  /// In en, this message translates to:
+  /// **'This book was not found in other sources'**
+  String get switchSourceNoResults;
+
   /// Pure black reading theme name
   ///
   /// In en, this message translates to:

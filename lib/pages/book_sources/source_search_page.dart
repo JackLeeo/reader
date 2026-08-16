@@ -40,6 +40,14 @@ class SourceSearchPage extends StatefulWidget {
         .toList(growable: false);
   }
 
+  /// 排序的公开测试入口：验证相关度分级与稳定性。
+  /// 实现委托给 State 内的静态排序器，与搜索主流程共用同一份逻辑。
+  @visibleForTesting
+  static List<SourcedBook> sortByRelevanceForTest(
+    Iterable<SourcedBook> items,
+    String query,
+  ) => _SourceSearchPageState._sortedByRelevance(items, query);
+
   @override
   State<SourceSearchPage> createState() => _SourceSearchPageState();
 }
@@ -166,10 +174,11 @@ class _SourceSearchPageState extends State<SourceSearchPage> {
           setState(() {
             _completedSourceCount++;
             _failedSourceNames = List.unmodifiable(failedNames);
-            // 流式上屏：成功一批就合并一批结果，用户不必等所有源（含
-            // 死站 12s 超时）全部结束才看到内容。
-            _results = _dedupeAcrossSources(
-              batches.expand((batch) => batch.items),
+            // 流式上屏：成功一批就合并一批结果并按相关度排序，用户
+            // 不必等所有源（含死站 12s 超时）全部结束才看到内容。
+            _results = _sortedByRelevance(
+              _dedupeAcrossSources(batches.expand((batch) => batch.items)),
+              query,
             );
             _pageStates = {
               for (final batch in batches)
@@ -188,8 +197,9 @@ class _SourceSearchPageState extends State<SourceSearchPage> {
     if (!mounted || generation != _searchGeneration) return;
     setState(() {
       // 跨源去重：同名同作者的书只保留首个命中的源，减少重复噪音。
-      _results = _dedupeAcrossSources(
-        batches.expand((batch) => batch.items),
+      _results = _sortedByRelevance(
+        _dedupeAcrossSources(batches.expand((batch) => batch.items)),
+        query,
       );
       _pageStates = {
         for (final batch in batches)
@@ -205,6 +215,61 @@ class _SourceSearchPageState extends State<SourceSearchPage> {
       _searching = false;
     });
     WidgetsBinding.instance.addPostFrameCallback((_) => _handleScroll());
+  }
+
+  /// 归一化书名/作者：小写、去空白（含全角空格），用于相关度比较。
+  static String _normalizeSearchText(String text) {
+    return text.toLowerCase().replaceAll(RegExp(r'[\s\u3000]+'), '').trim();
+  }
+
+  /// 相关度打分（越小越相关）：
+  /// 0 = 书名与作者完全一致；1 = 仅书名完全一致；
+  /// 2 = 书名包含关键词；3 = 书名包含完整查询串；4 = 其它命中。
+  static int _relevanceScore(SourcedBook item, String query) {
+    final normalizedQuery = _normalizeSearchText(query);
+    if (normalizedQuery.isEmpty) return 4;
+    final title = _normalizeSearchText(item.book.title);
+    final author = _normalizeSearchText(item.book.author);
+    // 查询形如"书名 作者"时拆成两段：作者段是否一致区分第 0/1 档，
+    // 书名段单独参与等值/包含匹配。拆分不依赖条目自身，否则作者
+    // 不一致的条目会拿整串当书名匹配，永远落不到第 1 档。
+    var titleQuery = normalizedQuery;
+    var authorQuery = '';
+    final splitIndex = query.trim().lastIndexOf(' ');
+    if (splitIndex > 0) {
+      final head = _normalizeSearchText(query.substring(0, splitIndex));
+      final tail = _normalizeSearchText(query.substring(splitIndex + 1));
+      if (head.isNotEmpty && tail.isNotEmpty) {
+        titleQuery = head;
+        authorQuery = tail;
+      }
+    }
+    if (title == normalizedQuery || title == titleQuery) {
+      return authorQuery.isEmpty || author == authorQuery ? 0 : 1;
+    }
+    if (titleQuery.isNotEmpty && title.contains(titleQuery)) return 2;
+    if (title.contains(normalizedQuery)) return 3;
+    return 4;
+  }
+
+  /// 相关度稳定排序：书名+作者一致 > 仅书名一致 > 书名包含 > 其它；
+  /// 同分保持既有相对顺序（源完成先后），不随源排列。
+  static List<SourcedBook> _sortedByRelevance(
+    Iterable<SourcedBook> items,
+    String query,
+  ) {
+    final scored = <MapEntry<int, SourcedBook>>[];
+    for (final item in items) {
+      scored.add(MapEntry(_relevanceScore(item, query), item));
+    }
+    var order = 0;
+    final indexed = {for (final entry in scored) entry.value: order++};
+    scored.sort((a, b) {
+      final byScore = a.key.compareTo(b.key);
+      if (byScore != 0) return byScore;
+      return (indexed[a.value] ?? 0).compareTo(indexed[b.value] ?? 0);
+    });
+    return scored.map((entry) => entry.value).toList(growable: false);
   }
 
   /// 书名+作者归一化后作为同一本书的判定键。
@@ -286,7 +351,9 @@ class _SourceSearchPageState extends State<SourceSearchPage> {
     }
 
     setState(() {
-      _results = [..._results, ...appended];
+      // 追加页与已有结果统一按相关度重排（需求：以相关程度排序，
+      // 而非按源分组/到达顺序）。
+      _results = _sortedByRelevance([..._results, ...appended], _activeQuery);
       _pageStates = nextStates;
       _loadingMore = false;
       _loadMoreFailed = batches.any((batch) => batch.failed);
@@ -420,7 +487,7 @@ class _SourceSearchPageState extends State<SourceSearchPage> {
         message: context.l10n.bookSourcesNoSourcesDescription,
       );
     }
-    if (_searching) {
+    if (_searching && _results.isEmpty) {
       // 分源进度：300 源并发时转圈无信息量，N/M 计数让用户
       // 知道还要等多久、卡在哪些源上。
       final progress = _totalSourceCount > 0
@@ -471,6 +538,33 @@ class _SourceSearchPageState extends State<SourceSearchPage> {
     return CustomScrollView(
       controller: _scrollController,
       slivers: [
+        if (_searching)
+          SliverPadding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+            sliver: SliverToBoxAdapter(
+              child: Row(
+                children: [
+                  const SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      _totalSourceCount > 0
+                          ? '已搜索 $_completedSourceCount/$_totalSourceCount 个书源 · ${_results.length} 本'
+                          : context.l10n.bookSourcesSearch,
+                      style: TextStyle(
+                        color: scheme.onSurfaceVariant,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
         SliverPadding(
           padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
           sliver: SliverToBoxAdapter(
