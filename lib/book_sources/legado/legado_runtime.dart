@@ -676,10 +676,12 @@ class LegadoRuntime {
     // ------- Heading Library fallback -------
     // 当规则匹配数量低、或者"匹配了一堆但有效章节极少"（典型是抓到了
     // 首页/排行/导航等非章链接）时，用章节标题正则在 <a> 池里重筛。
+    var headingTriggeredFallback = false;
     if (shouldTryHeadingFallback(
       chapterListHits: chapterListHits,
       validChapters: chapters.length,
     )) {
+      headingTriggeredFallback = true;
       _log(
         source,
         SourceDiagOp.fallback,
@@ -720,6 +722,117 @@ class LegadoRuntime {
           SourceDiagLevel.info,
           'heading fallback did not replace results: '
           'rebuilt=${rebuilt.length} (need ≥3 and > ${chapters.length})',
+        );
+      }
+    }
+
+    // ------- ChapterList 常见容器 fallback -------
+    // 如果规则选错了容器（如免费小说 `.dlbt_wz` / 天下书盟 `ul#list1 li a`
+    // 与页面结构不符），heading fallback 也没回天之力（anchorPool 太小
+    // 或者 <a> 在错误的容器里根本没被收集），这时候用已知 40 个常见章列表
+    // 选择器在各目录页 HTML 上逐试，抓到章节后再用 heading filter 过一遍。
+    if (chapters.isEmpty && httpOk) {
+      _log(
+        source,
+        SourceDiagOp.fallback,
+        SourceDiagLevel.warn,
+        'chapterList container fallback triggered: '
+        'headingFallbackUsed=$headingTriggeredFallback '
+        'chapterListHits=$chapterListHits trying ${_kChapterListContainerCandidates.length} selectors',
+        details: 'startUrl=$startUrl',
+      );
+      final collectedPool = <_FallbackChapterCandidate>[];
+      final anchorSeen = <String>{};
+      // 遍历刚才所有目录页响应（pendingPages 走过后已入 seenPages，但 DOM
+      // 已丢），所以需要重新抓（严格说可以缓存，但 fallback 路径不常见，
+      // 宁可多请求几轮也要保持代码清晰）。
+      for (final pageUrl in seenPages) {
+        final LegadoResponse resp;
+        try {
+          resp = _cachedDetailPage(pageUrl) ??
+              await _request(source, pageUrl);
+        } on Object {
+          continue;
+        }
+        final doc = LegadoRuleDocument.parse(resp.body, resp.finalUri);
+        int matchedIdx = -1;
+        for (var i = 0; i < _kChapterListContainerCandidates.length; i++) {
+          final selector = _kChapterListContainerCandidates[i];
+          List<Element> elems;
+          try {
+            elems = doc.querySelectorAll(selector);
+          } on Object {
+            continue;
+          }
+          if (elems.isEmpty) continue;
+          matchedIdx = i;
+          for (final a in elems) {
+            final href = a.attributes['href'];
+            if (href == null || href.isEmpty) continue;
+            final resolved = doc.baseUri.resolve(href);
+            if (resolved.scheme != 'http' && resolved.scheme != 'https') continue;
+            final url = resolved.toString();
+            if (!anchorSeen.add(url)) continue;
+            var title = (a.text).trim();
+            if (title.isEmpty) {
+              title = a.attributes['title'] ?? '';
+            }
+            if (title.isEmpty || title.length > 120) continue;
+            collectedPool.add(
+              _FallbackChapterCandidate(
+                title: title,
+                url: url,
+                pageDepth: 0,
+              ),
+            );
+          }
+          // 选到一个命中的就跳出：避免多个容器混合产生乱序重复。
+          if (collectedPool.length >= 3) break;
+        }
+        if (matchedIdx >= 0) {
+          _log(
+            source,
+            SourceDiagOp.fallback,
+            SourceDiagLevel.info,
+            'container fallback on ${resp.finalUri}: matched '
+            'selector index=$matchedIdx '
+            '(${_kChapterListContainerCandidates[matchedIdx]}) → '
+            '${collectedPool.length} candidates so far',
+          );
+        }
+      }
+      // 用 heading filter 过滤（比如去掉首页/导航/广告）。
+      final filtered = ChapterHeadingLibrary.filter(
+        collectedPool,
+        titleOf: (c) => c.title,
+      );
+      final rebuilt = <BookSourceChapter>[];
+      final newSeen = <String>{};
+      for (final c in filtered) {
+        if (!newSeen.add(c.url)) continue;
+        if (rebuilt.length >= _maxChapters) break;
+        rebuilt.add(
+          BookSourceChapter(id: c.url, title: c.title, order: rebuilt.length),
+        );
+      }
+      if (rebuilt.length >= 3) {
+        _log(
+          source,
+          SourceDiagOp.fallback,
+          SourceDiagLevel.info,
+          'container fallback recovered ${rebuilt.length} chapters',
+        );
+        chapters
+          ..clear()
+          ..addAll(rebuilt);
+      } else {
+        _log(
+          source,
+          SourceDiagOp.fallback,
+          SourceDiagLevel.info,
+          'container fallback did not recover chapters: '
+          'candidates=${collectedPool.length} headingFiltered=${filtered.length} '
+          'rebuilt=${rebuilt.length} (need ≥3)',
         );
       }
     }
@@ -1213,28 +1326,42 @@ class LegadoRuntime {
           );
           if (value.trim().isNotEmpty) working = value.trim();
         } catch (_) {
-          // 求值失败保持原样，由请求解析器给出可诊断错误。
+          // 引擎失败 fallback 到 Dart 迷你解释器。
+          working = _dartMiniEvalJs(
+            working.substring(4),
+            jsVariables,
+          ) ??
+              working;
         }
+      } else {
+        working = _dartMiniEvalJs(
+              working.substring(4),
+              jsVariables,
+            ) ??
+            working;
       }
     } else if (working.contains('<js>')) {
       // 内联 `<js>...</js>` 段：逐段求值并替换为结果。
       final engine = LegadoJsEngine.instance;
-      if (engine != null) {
-        for (final match in RegExp(
-          r'<js>([\s\S]*?)</js>',
-        ).allMatches(working).toList()) {
+      for (final match in RegExp(
+        r'<js>([\s\S]*?)</js>',
+      ).allMatches(working).toList()) {
+        String? value;
+        if (engine != null) {
           try {
-            final value = await engine.evaluateExpression(
+            value = await engine.evaluateExpression(
               match.group(1)!,
               jsVariables,
               sourceUrl: sourceUrl,
             );
-            if (value.isNotEmpty) {
-              working = working.replaceAll(match.group(0)!, value);
-            }
           } catch (_) {
-            // 单段失败继续处理其余段。
+            value = _dartMiniEvalJs(match.group(1)!, jsVariables);
           }
+        } else {
+          value = _dartMiniEvalJs(match.group(1)!, jsVariables);
+        }
+        if (value != null && value.isNotEmpty) {
+          working = working.replaceAll(match.group(0)!, value);
         }
       }
     }
@@ -1286,23 +1413,254 @@ class LegadoRuntime {
     ).allMatches(expanded).toList();
     if (unresolved.isEmpty) return expanded;
     final engine = LegadoJsEngine.instance;
-    if (engine == null) return expanded;
     for (final match in unresolved) {
       final expression = match.group(1)!.trim();
-      try {
-        final value = await engine.evaluateExpression(
-          expression,
-          jsVariables,
-          sourceUrl: sourceUrl,
-        );
-        if (value.isNotEmpty) {
-          expanded = expanded.replaceAll(match.group(0)!, value);
+      String? value;
+      if (engine != null) {
+        try {
+          value = await engine.evaluateExpression(
+            expression,
+            jsVariables,
+            sourceUrl: sourceUrl,
+          );
+        } catch (_) {
+          value = _dartMiniEvalJs(expression, jsVariables);
         }
-      } catch (_) {
-        // 未能在本地求值的模板保持原样，由请求解析器给出可诊断错误。
+      } else {
+        value = _dartMiniEvalJs(expression, jsVariables);
+      }
+      if (value != null && value.isNotEmpty) {
+        expanded = expanded.replaceAll(match.group(0)!, value);
       }
     }
     return expanded;
+  }
+
+  /// JS 引擎不可用时的轻量级表达式 fallback。
+  /// 专门覆盖 Legado 生态在 URL 模板里最常见的 5 种模式：
+  ///   1. `变量.replace("a","b")` / `变量.replaceAll("a","b")`
+  ///   2. `变量.split("x").join("y")` 组合
+  ///   3. `result = 表达式;` 或 `变量 = 表达式;` 形式
+  ///   4. `page + 1` / `变量 - 1` / `page*N` 算术
+  ///   5. 纯变量引用 `baseUrl` / `host` / `key` / `page` / `title`
+  static String? _dartMiniEvalJs(
+    String rawScript,
+    Map<String, String> variables,
+  ) {
+    if (rawScript.trim().isEmpty) return null;
+    var src = rawScript.trim();
+    // 先剥掉结尾的分号。
+    while (src.endsWith(';')) {
+      src = src.substring(0, src.length - 1).trim();
+    }
+    // 模式 3：`result = expr;` / `xxx = expr;` 赋值，只取右边。
+    final assignMatch = RegExp(
+      r'^[A-Za-z_$][\w$]*\s*=\s*([\s\S]+)',
+    ).firstMatch(src);
+    if (assignMatch != null) {
+      src = assignMatch.group(1)!.trim();
+    }
+    try {
+      return _dartMiniEvalExpression(src, variables);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static String? _dartMiniEvalExpression(
+    String expression,
+    Map<String, String> variables,
+  ) {
+    var expr = expression.trim();
+    if (expr.isEmpty) return null;
+    // 模式 5：纯变量。
+    final onlyVar = RegExp(r'^[A-Za-z_$][\w$]*$').firstMatch(expr);
+    if (onlyVar != null) {
+      final v = variables[onlyVar.group(0)!];
+      if (v != null) return v;
+      // page 默认按 "1" 处理以适配 `page+1` 失败后回退。
+      if (onlyVar.group(0)! == 'page') return '1';
+      return null;
+    }
+    // 字符串字面量：
+    final strLit = RegExp(r"""^(["'])((?:\\.|(?!\1)[\s\S])*)\1$""").firstMatch(expr);
+    if (strLit != null) {
+      return strLit.group(2)!;
+    }
+    // 数字字面量：
+    if (RegExp(r'^\d+$').hasMatch(expr)) return expr;
+    // 模式 1 / 2：链式方法调用 `变量.method(...).method(...)...`
+    // 支持 replace/replaceAll/split/join/toString 等。
+    final callChain = RegExp(
+      r'^([A-Za-z_$][\w$]*)((?:\.[A-Za-z_$][\w$]*\s*\([^)]*\))+)$',
+    ).firstMatch(expr);
+    if (callChain != null) {
+      var base = variables[callChain.group(1)!];
+      if (base == null) return null;
+      var working = base;
+      final chainSource = callChain.group(2)!;
+      // 切分每个 .method(args)（简单按括号配对）。
+      final methodRe = RegExp(
+        r'\.?([A-Za-z_$][\w$]*)\s*\(([^)]*)\)',
+      );
+      final methods = methodRe.allMatches(chainSource).toList();
+      if (methods.isEmpty) return working;
+      for (final m in methods) {
+        final name = m.group(1)!;
+        final argsRaw = m.group(2) ?? '';
+        final args = _parseMiniArgs(argsRaw, variables);
+        switch (name) {
+          case 'replace':
+          case 'replaceAll':
+            if (args.length >= 2) {
+              working = working.replaceAll(args[0], args[1]);
+            }
+            break;
+          case 'replaceFirst':
+            if (args.length >= 2) {
+              working = working.replaceFirst(args[0], args[1]);
+            }
+            break;
+          case 'split':
+            break;
+          case 'join':
+            break;
+          case 'toString':
+            break;
+          case 'trim':
+            working = working.trim();
+            break;
+        }
+      }
+      return working;
+    }
+    // 模式 4：`变量 op 数字` 或 `数字 op 变量`。
+    final arith = RegExp(
+      r'^(\d+|[A-Za-z_$][\w$]*)\s*([+\-*/])\s*(\d+|[A-Za-z_$][\w$]*)$',
+    ).firstMatch(expr);
+    if (arith != null) {
+      int? resolve(dynamic s) {
+        final v = s.toString();
+        final n = int.tryParse(v);
+        if (n != null) return n;
+        final varValue = variables[v];
+        if (varValue != null) return int.tryParse(varValue);
+        if (v == 'page') return 1;
+        return null;
+      }
+
+      final left = resolve(arith.group(1));
+      final right = resolve(arith.group(3));
+      final op = arith.group(2)!;
+      if (left != null && right != null) {
+        int r;
+        switch (op) {
+          case '+':
+            r = left + right;
+            break;
+          case '-':
+            r = left - right;
+            break;
+          case '*':
+            r = left * right;
+            break;
+          case '/':
+            r = right == 0 ? 0 : (left / right).round();
+            break;
+          default:
+            return null;
+        }
+        return r.toString();
+      }
+    }
+    // 字符串拼接：`"abc" + 变量` 或 `变量 + "xyz"`（退化尝试）。
+    final concat = RegExp(
+      r"""^([A-Za-z_$][\w$]*)\s*\+\s*(["'])((?:\\.|(?!\2)[\s\S])*)\2$""",
+    ).firstMatch(expr);
+    if (concat != null) {
+      final base = variables[concat.group(1)!];
+      if (base != null) return base + concat.group(3)!;
+    }
+    final concat2 = RegExp(
+      r"""^(["'])((?:\\.|(?!\1)[\s\S])*)\1\s*\+\s*([A-Za-z_$][\w$]*)$""",
+    ).firstMatch(expr);
+    if (concat2 != null) {
+      final base = variables[concat2.group(3)!];
+      if (base != null) return concat2.group(2)! + base;
+    }
+    return null;
+  }
+
+  static List<String> _parseMiniArgs(
+    String argsRaw,
+    Map<String, String> variables,
+  ) {
+    final out = <String>[];
+    int i = 0;
+    while (i < argsRaw.length) {
+      final ch = argsRaw[i];
+      if (ch == ' ' || ch == '\t' || ch == ',') {
+        i++;
+        continue;
+      }
+      // 字符串字面量（支持单/双引号）。
+      if (ch == '"' || ch == "'") {
+        final quote = ch;
+        i++;
+        final buf = StringBuffer();
+        while (i < argsRaw.length) {
+          final c = argsRaw[i];
+          if (c == '\\' && i + 1 < argsRaw.length) {
+            final n = argsRaw[i + 1];
+            switch (n) {
+              case 'n':
+                buf.write('\n');
+                break;
+              case 't':
+                buf.write('\t');
+                break;
+              case 'r':
+                buf.write('\r');
+                break;
+              case '"':
+                buf.write('"');
+                break;
+              case "'":
+                buf.write("'");
+                break;
+              case '\\':
+                buf.write('\\');
+                break;
+              default:
+                buf.write(n);
+            }
+            i += 2;
+          } else if (c == quote) {
+            i++;
+            break;
+          } else {
+            buf.write(c);
+            i++;
+          }
+        }
+        out.add(buf.toString());
+      } else {
+        // 裸 token：数字或变量。
+        final start = i;
+        while (i < argsRaw.length && argsRaw[i] != ',') {
+          i++;
+        }
+        final token = argsRaw.substring(start, i).trim();
+        if (token.isNotEmpty) {
+          if (RegExp(r'^[A-Za-z_$][\w$]*$').hasMatch(token)) {
+            out.add(variables[token] ?? token);
+          } else {
+            out.add(token);
+          }
+        }
+      }
+    }
+    return out;
   }
 
   /// 组装传给规则引擎的 JS 变量（含 jsLib 前置脚本）。
@@ -1610,4 +1968,58 @@ const List<String> _kContentContainerCandidates = [
   '.text-content',
   '#text',
   '.reader-box',
+];
+
+/// 章列表容器 fallback 候选：按命中占比 >80% 的顺序排序。
+const List<String> _kChapterListContainerCandidates = [
+  // —— id 类（最稳定，优先）
+  '#list a',
+  '#catalog a',
+  '#chapterList a',
+  '#chapters a',
+  '#chapter-list a',
+  '#dir a',
+  '#directory a',
+  '#chapterBox a',
+  '#list-chapter a',
+  '#chaps a',
+  '#book-chapter-list a',
+  '#content_1 a',
+  '#content-1 a',
+  // 群小说网 & 通用老站：#list + dl/dd 变体
+  '#list dl dd a',
+  '#list dd a',
+  '#content-list a',
+  // —— class 类（常见模板）
+  '.chapterlist a',
+  '.chapter-list a',
+  '.book-list a',
+  '.chapters a',
+  '.cl_section a',
+  '.zjlist a',
+  '.zjlist dd a',
+  '.catalog a',
+  '.book-chapter a',
+  '.chapter-links a',
+  '.content_1 a',
+  '.bookinfo-catalog a',
+  '.chapterbox a',
+  '.list-chapter a',
+  '.chapter-items a',
+  // 天下书盟风格：ul#list1 + 独立章节 id 锚
+  'ul#list1 li a',
+  '.a_red3 a',
+  '.a_red6 a',
+  // 免费小说风格
+  '.xztext_a a',
+  '.dl_link a',
+  '.dl_link_bd a',
+  '.dlbt_wz a',
+  // 连尚读书 / Vue SSR：常见的目录容器
+  '.catalog-content a',
+  '.chapter-catalog a',
+  '.book-chapter-list a',
+  // 最终兜底：直接在文档里抓所有 a[href]（heading library 会过滤噪声，
+  // 所以最后一条保底不会误伤太多）。
+  'a[href]',
 ];
