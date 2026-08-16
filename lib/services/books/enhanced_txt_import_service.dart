@@ -3,6 +3,7 @@
 
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
+import 'package:xxread/core/reader/chapter_heading_library.dart';
 import 'package:xxread/services/books/text_preprocessor_helper.dart';
 import 'package:xxread/utils/fast_gbk_decoder.dart';
 
@@ -870,35 +871,30 @@ class EnhancedTxtImportService {
 
   /// 获取章节模式列表
   List<RegExp> _getChapterPatterns() {
+    // 与 [ChapterHeadingLibrary] 对齐：这里仍保持 List<RegExp> API，
+    // 但实际判定委托给库（looksLikeHeading 默认集），避免两处规则分叉。
+    // 为了兼容 _isChapterTitle 老调用方，返回包含一个"库代理"的
+    // 1-element 列表即可（也可以直接加多个显式规则做快速失败）。
     return [
-      // 中文章节
+      // 1) 原项目中高置信的显式规则（保留作快速等值匹配）
       RegExp(r'^第[一二三四五六七八九十百千\d]+章\s*(.*)$'),
       RegExp(r'^第[一二三四五六七八九十百千\d]+节\s*(.*)$'),
-      RegExp(r'^[一二三四五六七八九十]+、\s*(.*)$'),
-      RegExp(r'^\d+\.\s*(.*)$'),
-      RegExp(r'^[\d]+[\.、]\s*(.*)$'),
-
-      // 英文章节
       RegExp(r'^Chapter\s+\d+\s*(.*)$', caseSensitive: false),
       RegExp(r'^Part\s+\d+\s*(.*)$', caseSensitive: false),
-      RegExp(r'^Section\s+\d+\s*(.*)$', caseSensitive: false),
-
-      // 特殊章节
-      RegExp(r'^(序言|前言|引言|目录|后记|跋|结语)(.*)$'),
-      RegExp(
-        r'^(Preface|Introduction|Prologue|Epilogue)(.*)$',
-        caseSensitive: false,
-      ),
-
-      // 分割线章节
-      RegExp(r'^[=\-]{3,}\s*(.+)\s*[=\-]{3,}$'),
-      RegExp(r'^\*{3,}\s*(.+)\s*\*{3,}$'),
+      // 2) 回退：如果显式都不命中，仍用 ChapterHeadingLibrary 默认集
+      //    覆盖"一、xxx"、"12. xxx"、"Chapter 1 Title"、"★ 序章"等写法。
+      //    这里用"不可能直接命中"的正则作为占位，真正的判定在下面的
+      //    _isChapterTitle override 里做。实际使用：先跑上面 4 条做快速
+      //    匹配，没命中的再调用 looksLikeHeading。
     ];
   }
 
   bool _isChapterTitle(String line) {
     final chapterPatterns = _getChapterPatterns();
-    return chapterPatterns.any((pattern) => pattern.hasMatch(line));
+    for (final p in chapterPatterns) {
+      if (p.hasMatch(line)) return true;
+    }
+    return ChapterHeadingLibrary.looksLikeHeading(line);
   }
 
   String _cleanTitle(String title) {

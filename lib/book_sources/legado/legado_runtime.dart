@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:crypto/crypto.dart';
 
+import '../../core/reader/chapter_heading_library.dart';
 import '../models/registered_book_source.dart';
 import '../protocol/book_source_protocol.dart';
 import 'legado_book_source.dart';
@@ -376,6 +377,9 @@ class LegadoRuntime {
     var pageReferer = referer;
     var httpOk = false;
     var chapterListHits = 0;
+    // 启用 heading fallback 的"累计统计"：在循环结束后统一判定一次，
+    // 如果规则结果实在太差，把各页里用 heading 正则挑出的链接合并进来。
+    final fallbackPool = <_FallbackChapterCandidate>[];
     for (var hop = 0; hop < _maxPageHops && pendingPages.isNotEmpty; hop++) {
       final pageUrl = pendingPages.removeAt(0);
       if (pageUrl.isEmpty || !seenPages.add(pageUrl)) continue;
@@ -404,13 +408,18 @@ class LegadoRuntime {
         response.body,
         response.finalUri,
       );
-      final contexts = await _rules.evaluateList(
-        document,
-        null,
-        _requiredRule(rule, 'chapterList'),
-        jsVariables: vars,
-        sourceUrl: source.url,
-      );
+      List<Object?> contexts;
+      try {
+        contexts = await _rules.evaluateList(
+          document,
+          null,
+          _requiredRule(rule, 'chapterList'),
+          jsVariables: vars,
+          sourceUrl: source.url,
+        );
+      } on Object {
+        contexts = const [];
+      }
       chapterListHits += contexts.length;
       for (final context in contexts) {
         final title = await _value(
@@ -439,6 +448,45 @@ class LegadoRuntime {
           BookSourceChapter(id: url, title: title, order: chapters.length),
         );
       }
+
+      // 为 heading fallback 收集候选：同一页里的 <a> 节点（带 href + 文本）。
+      try {
+        final anchors = await _rules.evaluateList(
+          document,
+          null,
+          '@css:a[href]',
+          jsVariables: vars,
+          sourceUrl: source.url,
+        );
+        for (final node in anchors) {
+          final maybeText = await _rules.evaluateString(
+            document,
+            node,
+            'text',
+            jsVariables: vars,
+            sourceUrl: source.url,
+          );
+          final maybeHref = await _rules.evaluateString(
+            document,
+            node,
+            'href',
+            resolveUrl: true,
+            jsVariables: vars,
+            sourceUrl: source.url,
+          );
+          if (maybeText.isEmpty || maybeHref.isEmpty) continue;
+          fallbackPool.add(
+            _FallbackChapterCandidate(
+              title: maybeText.trim(),
+              url: maybeHref,
+              pageDepth: hop,
+            ),
+          );
+        }
+      } on Object {
+        // 收集失败是允许的：走不到 fallback 就当没这事儿。
+      }
+
       final nextRule = _optionalRule(rule, 'nextTocUrl');
       if (nextRule.isEmpty) continue;
       final nextRaw = await _rules.evaluateString(
@@ -457,6 +505,35 @@ class LegadoRuntime {
         pendingPages.add(resolved.toString());
       }
     }
+
+    // ------- Heading Library fallback -------
+    // 当规则匹配数量低、或者"匹配了一堆但有效章节极少"（典型是抓到了
+    // 首页/排行/导航等非章链接）时，用章节标题正则在 <a> 池里重筛。
+    if (shouldTryHeadingFallback(
+      chapterListHits: chapterListHits,
+      validChapters: chapters.length,
+    )) {
+      final filtered = ChapterHeadingLibrary.filter(
+        fallbackPool,
+        titleOf: (c) => c.title,
+      );
+      final rebuilt = <BookSourceChapter>[];
+      for (final c in filtered) {
+        if (!seenChapters.add(c.url)) continue;
+        if (rebuilt.length >= _maxChapters) break;
+        rebuilt.add(
+          BookSourceChapter(id: c.url, title: c.title, order: rebuilt.length),
+        );
+      }
+      // 只在 fallback 至少产出 3 条时才替换规则结果 —— 避免误触发
+      // 把规则命中的正确结果盖掉。
+      if (rebuilt.length >= 3 && rebuilt.length > chapters.length) {
+        chapters
+          ..clear()
+          ..addAll(rebuilt);
+      }
+    }
+
     onDiagnostics?.call(
       _ChapterPageDiagnostics(
         httpOk: httpOk,
@@ -1155,4 +1232,17 @@ class _ChapterPageDiagnostics {
   final bool httpOk;
   final int chapterListHits;
   final int validChapters;
+}
+
+/// heading fallback 流程里从 <a> 里收集到的候选条目。
+class _FallbackChapterCandidate {
+  const _FallbackChapterCandidate({
+    required this.title,
+    required this.url,
+    required this.pageDepth,
+  });
+
+  final String title;
+  final String url;
+  final int pageDepth;
 }

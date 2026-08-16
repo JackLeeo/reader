@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 
+import 'chapter_heading_library.dart';
 import 'reader_text_characters.dart';
 
 /// A TXT chapter whose heading and body occupy separate source ranges.
@@ -154,35 +155,49 @@ int _nearbyLineBoundary(
 }
 
 List<_TxtChapterMatch> _findTxtChapterMatches(String text) {
-  final heading = RegExp(
-    r'^(?:第[0-9零〇一二三四五六七八九十百千万两]+[章节卷部篇回]|chapter\s+\d+|part\s+\d+|序章|序言|前言|引言|楔子|后记|尾声|番外)(?:[\s　:：.-]+.*)?$',
-    caseSensitive: false,
-  );
-  final matches = <_TxtChapterMatch>[];
-  var offset = 0;
-  while (offset < text.length) {
-    final lineBreak = _findLineBreak(text, offset);
-    final lineEnd = lineBreak < 0 ? text.length : lineBreak;
-    final title = text.substring(offset, lineEnd).trim();
-    final normalizedTitle = title
-        .replaceFirst(RegExp(r'^#{1,6}\s*'), '')
-        .trim();
-    if (normalizedTitle.length <= 80 && heading.hasMatch(normalizedTitle)) {
-      matches.add(
-        _TxtChapterMatch(
-          headingStart: offset,
-          bodyStart: lineBreak < 0
-              ? text.length
-              : lineBreak + readerLineBreakLengthAt(text, lineBreak),
-          title: normalizedTitle,
-        ),
-      );
+  // 先用默认集（误判率低）扫描；如果命中 < 2，说明民间 TXT 格式偏门，
+  // 再开完整集（带 序/简介/文案/回场/特殊符号标题 等条目）做二次扫描。
+  var rules = ChapterHeadingLibrary.defaultRules;
+  final firstPass = <_TxtChapterMatch>[];
+  final secondPass = <_TxtChapterMatch>[];
+
+  bool runPass(List<_TxtChapterMatch> out) {
+    out.clear();
+    var offset = 0;
+    while (offset < text.length) {
+      final lineBreak = _findLineBreak(text, offset);
+      final lineEnd = lineBreak < 0 ? text.length : lineBreak;
+      final title = text.substring(offset, lineEnd).trim();
+      final normalizedTitle = title
+          .replaceFirst(RegExp(r'^#{1,6}\s*'), '')
+          .trim();
+      if (normalizedTitle.length <= 80 &&
+          ChapterHeadingLibrary.looksLikeHeading(
+            normalizedTitle,
+            rules: rules,
+          )) {
+        out.add(
+          _TxtChapterMatch(
+            headingStart: offset,
+            bodyStart: lineBreak < 0
+                ? text.length
+                : lineBreak + readerLineBreakLengthAt(text, lineBreak),
+            title: normalizedTitle,
+          ),
+        );
+      }
+      offset = lineBreak < 0
+          ? text.length
+          : lineBreak + readerLineBreakLengthAt(text, lineBreak);
     }
-    offset = lineBreak < 0
-        ? text.length
-        : lineBreak + readerLineBreakLengthAt(text, lineBreak);
+    return out.length >= 2;
   }
-  return matches;
+
+  final enough = runPass(firstPass);
+  if (enough) return firstPass;
+  rules = ChapterHeadingLibrary.allRules;
+  runPass(secondPass);
+  return secondPass.isEmpty ? firstPass : secondPass;
 }
 
 int _skipEmptyLines(String text, int start, int end) {

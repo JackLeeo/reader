@@ -15,6 +15,7 @@ import 'package:xxread/book_sources/services/book_source_reading_progress.dart';
 import 'package:xxread/book_sources/services/book_source_shelf_service.dart';
 import 'package:xxread/book_sources/services/book_source_text_paginator.dart';
 import 'package:xxread/core/reader/canonical_locator.dart';
+import 'package:xxread/core/reader/chapter_heading_library.dart';
 import 'package:xxread/core/reader/android_reader_aloud_notification.dart';
 import 'package:xxread/core/reader/native_text_paginator.dart';
 import 'package:xxread/core/reader/reader_annotation.dart';
@@ -1670,12 +1671,14 @@ class _BookSourceReaderPageState extends State<BookSourceReaderPage>
     }
   }
 
-  /// 在目标源目录中定位当前章节：精确标题 → 归一化包含 → 进度比例。
+  /// 在目标源目录中定位当前章节：精确标题 → 归一化包含 → 序号相等 → 进度比例。
   int _matchChapterIn(List<BookSourceChapter> target) {
     if (target.isEmpty) return 0;
     if (_chapters.isEmpty) return 0;
     final currentIndex = _chapterIndex.clamp(0, _chapters.length - 1);
-    final currentTitle = _normalizeChapterTitle(_chapters[currentIndex].title);
+    final currentRaw = _chapters[currentIndex].title;
+    final currentTitle = _normalizeChapterTitle(currentRaw);
+    final currentIndexValue = ChapterHeadingLibrary.extractIndex(currentRaw);
     if (currentTitle.length >= 2) {
       for (var i = 0; i < target.length; i++) {
         if (_normalizeChapterTitle(target[i].title) == currentTitle) return i;
@@ -1687,6 +1690,18 @@ class _BookSourceReaderPageState extends State<BookSourceReaderPage>
           return i;
         }
       }
+      if (currentIndexValue != null) {
+        for (var i = 0; i < target.length; i++) {
+          final idx = ChapterHeadingLibrary.extractIndex(target[i].title);
+          if (idx == null) continue;
+          if (idx.numeric == currentIndexValue.numeric &&
+              (idx.unit.isEmpty ||
+                  currentIndexValue.unit.isEmpty ||
+                  idx.unit == currentIndexValue.unit)) {
+            return i;
+          }
+        }
+      }
     }
     return ((_chapterIndex / _chapters.length) * target.length).round().clamp(
       0,
@@ -1694,8 +1709,11 @@ class _BookSourceReaderPageState extends State<BookSourceReaderPage>
     );
   }
 
-  static String _normalizeChapterTitle(String title) =>
-      title.replaceAll(RegExp(r'[\s\u3000]+'), '').trim();
+  static String _normalizeChapterTitle(String title) {
+    final semantic = ChapterHeadingLibrary.normalizeForCrossSource(title);
+    // 归一化后再压缩空白，保证等值比较最严格
+    return semantic.replaceAll(RegExp(r'[\s\u3000]+'), '').trim();
+  }
 
   Future<void> _updateReadingSettings({
     double? fontSize,
