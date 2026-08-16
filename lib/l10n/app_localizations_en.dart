@@ -3040,6 +3040,9 @@ class AppLocalizationsEn extends AppLocalizations {
   String get readerThemeNight => 'Night';
 
   @override
+  String get toggleNightMode => 'Toggle night mode';
+
+  @override
   String get readerThemePureBlack => 'Pure black';
 
   @override

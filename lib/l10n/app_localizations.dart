@@ -5456,6 +5456,12 @@ abstract class AppLocalizations {
   /// **'Night'**
   String get readerThemeNight;
 
+  /// No description provided for @toggleNightMode.
+  ///
+  /// In en, this message translates to:
+  /// **'Toggle night mode'**
+  String get toggleNightMode;
+
   /// Pure black reading theme name
   ///
   /// In en, this message translates to:

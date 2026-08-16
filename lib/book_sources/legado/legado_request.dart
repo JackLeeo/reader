@@ -270,6 +270,10 @@ class LegadoHttpTransport implements LegadoTransport {
   @override
   Future<LegadoResponse> send(LegadoRequestTemplate request) async {
     var current = request.url;
+    // HTTP 语义 + yuedu_hd 行为：POST 遇 301/302/303 重定向改 GET 重发
+    // （表单提交后跳转型站点的搜索依赖此行为）。
+    var method = request.method;
+    String? body = request.body;
     for (var redirects = 0; redirects <= 5; redirects++) {
       await _networkPolicy.validate(current);
       // CookieJar：书源自带 Cookie 与存储的 Cookie 合并回传，并保存 Set-Cookie。
@@ -291,7 +295,7 @@ class LegadoHttpTransport implements LegadoTransport {
       if (cookieHeader.isNotEmpty) mergedHeaders['Cookie'] = cookieHeader;
       Response<List<int>>? response;
       try {
-        response = await _attempt(current, request, mergedHeaders);
+        response = await _attempt(current, request, method, body, mergedHeaders);
       } on DioException catch (error) {
         // 连接类失败重试一次：聚合并发下的偶发连接被拒/超时。
         if (!_isRetryableConnectionError(error)) {
@@ -299,7 +303,13 @@ class LegadoHttpTransport implements LegadoTransport {
         }
         await Future<void>.delayed(const Duration(milliseconds: 300));
         try {
-          response = await _attempt(current, request, mergedHeaders);
+          response = await _attempt(
+            current,
+            request,
+            method,
+            body,
+            mergedHeaders,
+          );
         } on DioException catch (error) {
           _rethrowRequestException(error);
         }
@@ -326,6 +336,11 @@ class LegadoHttpTransport implements LegadoTransport {
           'Legado source redirected too many times.',
         );
       }
+      if (method == LegadoRequestMethod.post &&
+          (status == 301 || status == 302 || status == 303)) {
+        method = LegadoRequestMethod.get;
+        body = null;
+      }
       current = BookSourceNetworkPolicy.redirectTarget(
         current,
         response.headers.value(HttpHeaders.locationHeader),
@@ -337,16 +352,18 @@ class LegadoHttpTransport implements LegadoTransport {
   Future<Response<List<int>>> _attempt(
     Uri target,
     LegadoRequestTemplate request,
+    LegadoRequestMethod method,
+    String? body,
     Map<String, String> mergedHeaders,
   ) {
     final cancelToken = CancelToken();
     return _dio.requestUri<List<int>>(
       target,
-      data: request.method == LegadoRequestMethod.post
-          ? Uint8List.fromList(_encode(request.body ?? '', request.charset))
+      data: method == LegadoRequestMethod.post
+          ? Uint8List.fromList(_encode(body ?? '', request.charset))
           : null,
       options: Options(
-        method: request.method == LegadoRequestMethod.post ? 'POST' : 'GET',
+        method: method == LegadoRequestMethod.post ? 'POST' : 'GET',
         headers: mergedHeaders,
         responseType: ResponseType.bytes,
         followRedirects: false,
@@ -390,8 +407,10 @@ const defaultLegadoUserAgent =
 const _supportedCharsets = {'utf-8', 'utf8', 'gbk', 'gb2312', 'gb18030'};
 final _unresolvedVariables = RegExp(r'\{\{[^{}]+\}\}');
 final _unresolvedGetSyntax = RegExp(r'@get:\{[^{}]*\}');
+// `@put:` 不在此列：URL 模板里的 @put:{name:value} 由 runtime 的
+// _expandTemplate 先行展开/剥离（原版 Legado 语义），不应按脚本拦截。
 final _unsupportedRequestSyntax = RegExp(
-  r'@js:|<js>|@put:',
+  r'@js:|<js>',
   caseSensitive: false,
 );
 const _forbiddenHeaders = {
@@ -439,5 +458,18 @@ String _decode(List<int> bytes, String configured, Headers headers) {
       lenient: !isLikelyValidGbkByteStream(encoded),
     );
   }
-  return utf8.decode(bytes, allowMalformed: true);
+  // yuedu_hd 行为：声明 utf8 但解码出大量替换符（U+FFFD）时，
+  // 实际多半是 GBK 字节流，回退按 GBK 解码一次。
+  final decoded = utf8.decode(bytes, allowMalformed: true);
+  final replacementCount = '\uFFFD'.allMatches(decoded).length;
+  if (replacementCount > 0 && bytes.length > 16) {
+    final encoded = bytes is Uint8List ? bytes : Uint8List.fromList(bytes);
+    if (isLikelyValidGbkByteStream(encoded)) {
+      final gbkText = decodeGbkFast(encoded, lenient: false);
+      if ('\uFFFD'.allMatches(gbkText).length < replacementCount) {
+        return gbkText;
+      }
+    }
+  }
+  return decoded;
 }

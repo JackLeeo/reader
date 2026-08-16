@@ -1575,6 +1575,14 @@ class _BookSourceReaderPageState extends State<BookSourceReaderPage>
     };
   }
 
+  /// yuedu_hd 风格：底部栏一键切换日间/夜间主题。
+  /// 依据当前生效调色板的亮度判断（覆盖跟随系统与深色自定义主题）。
+  Future<void> _toggleNightMode() async {
+    final isNight = _readerTheme.brightness == Brightness.dark;
+    final targetThemeId = isNight ? ReaderThemes.day.id : ReaderThemes.night.id;
+    await _updateReadingSettings(themeId: targetThemeId);
+  }
+
   Future<void> _updateReadingSettings({
     double? fontSize,
     double? lineHeight,
@@ -2129,143 +2137,184 @@ class _BookSourceReaderPageState extends State<BookSourceReaderPage>
 
   @override
   Widget build(BuildContext context) {
-    return AnnotatedRegion<SystemUiOverlayStyle>(
-      key: const ValueKey('reader-system-ui-region'),
-      value: _readerSystemUiOverlayStyle,
-      child: PopScope(
-        canPop: _canPopWithoutPrompt && !_tapZoneEditorVisible,
-        onPopInvokedWithResult: (didPop, _) {
-          if (didPop) {
-            BookOpenTransition.beginExit();
-          } else if (_tapZoneEditorVisible) {
-            setState(() => _tapZoneEditorVisible = false);
-          } else {
-            unawaited(_requestExit());
-          }
-        },
-        child: Theme(
-          data: _readerThemeData,
-          child: Scaffold(
-            backgroundColor: Colors.transparent,
-            // The reader page has no text field of its own, but Scaffold
-            // shrinks `body` for ANY keyboard inset by default, including
-            // one raised by a TextField inside a modal sheet stacked on top
-            // (e.g. the TOC search box). That resize changes the layout
-            // constraints the pagination below reacts to on every animation
-            // frame, forcing a full chapter re-pagination each frame.
-            resizeToAvoidBottomInset: false,
-            body: ReaderThemeBackground(
-              palette: _readerTheme,
-              child: ReaderPullBookmark(
-                enabled:
-                    _pullBookmarkEnabled &&
-                    _chapters.isNotEmpty &&
-                    !_tapZoneEditorVisible,
-                bookmarked: _currentPageIsBookmarked,
-                busy: _bookmarkBusy,
-                palette: _readerTheme,
-                addHint: context.l10n.readerPullBookmarkAddHint,
-                removeHint: context.l10n.readerPullBookmarkRemoveHint,
-                releaseHint: context.l10n.readerPullBookmarkReleaseHint,
-                onTriggered: () => unawaited(_toggleCurrentBookmark()),
-                child: Stack(
-                  children: [
-                    Positioned.fill(
-                      child: ReaderTapObserver(
-                        key: const ValueKey('book-source-reader-tap-observer'),
-                        enabled:
-                            _readerFontReady &&
-                            !_loadingCatalog &&
-                            (!_loadingContent || _content != null) &&
-                            _error == null &&
-                            _chapters.isNotEmpty &&
-                            _content != null &&
-                            !_annotationInteractionActive,
-                        onTap: _handleReaderTap,
-                        child: Semantics(
-                          label: widget.book.title,
-                          child: _buildBodyCrossfade(),
+    // 键盘翻页（桌面端/外接键盘）：方向键、PageUp/Down、空格。
+    // 章节未就绪时按键切换控制栏，避免无效翻页。
+    void turnForward() {
+      if (_chapters.isEmpty || _content == null) {
+        _showControlsTemporarily();
+        return;
+      }
+      unawaited(_turnForward());
+    }
+
+    void turnBackward() {
+      if (_chapters.isEmpty || _content == null) {
+        _showControlsTemporarily();
+        return;
+      }
+      unawaited(_turnBackward());
+    }
+
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.pageDown): turnForward,
+        const SingleActivator(LogicalKeyboardKey.arrowRight): turnForward,
+        const SingleActivator(LogicalKeyboardKey.space): turnForward,
+        const SingleActivator(LogicalKeyboardKey.pageUp): turnBackward,
+        const SingleActivator(LogicalKeyboardKey.arrowLeft): turnBackward,
+      },
+      child: Focus(
+        autofocus: true,
+        child: AnnotatedRegion<SystemUiOverlayStyle>(
+          key: const ValueKey('reader-system-ui-region'),
+          value: _readerSystemUiOverlayStyle,
+          child: PopScope(
+            canPop: _canPopWithoutPrompt && !_tapZoneEditorVisible,
+            onPopInvokedWithResult: (didPop, _) {
+              if (didPop) {
+                BookOpenTransition.beginExit();
+              } else if (_tapZoneEditorVisible) {
+                setState(() => _tapZoneEditorVisible = false);
+              } else {
+                unawaited(_requestExit());
+              }
+            },
+            child: Theme(
+              data: _readerThemeData,
+              child: Scaffold(
+                backgroundColor: Colors.transparent,
+                // The reader page has no text field of its own, but Scaffold
+                // shrinks `body` for ANY keyboard inset by default, including
+                // one raised by a TextField inside a modal sheet stacked on top
+                // (e.g. the TOC search box). That resize changes the layout
+                // constraints the pagination below reacts to on every animation
+                // frame, forcing a full chapter re-pagination each frame.
+                resizeToAvoidBottomInset: false,
+                body: ReaderThemeBackground(
+                  palette: _readerTheme,
+                  child: ReaderPullBookmark(
+                    enabled:
+                        _pullBookmarkEnabled &&
+                        _chapters.isNotEmpty &&
+                        !_tapZoneEditorVisible,
+                    bookmarked: _currentPageIsBookmarked,
+                    busy: _bookmarkBusy,
+                    palette: _readerTheme,
+                    addHint: context.l10n.readerPullBookmarkAddHint,
+                    removeHint: context.l10n.readerPullBookmarkRemoveHint,
+                    releaseHint: context.l10n.readerPullBookmarkReleaseHint,
+                    onTriggered: () => unawaited(_toggleCurrentBookmark()),
+                    child: Stack(
+                      children: [
+                        Positioned.fill(
+                          child: ReaderTapObserver(
+                            key: const ValueKey(
+                              'book-source-reader-tap-observer',
+                            ),
+                            enabled:
+                                _readerFontReady &&
+                                !_loadingCatalog &&
+                                (!_loadingContent || _content != null) &&
+                                _error == null &&
+                                _chapters.isNotEmpty &&
+                                _content != null &&
+                                !_annotationInteractionActive,
+                            onTap: _handleReaderTap,
+                            child: Semantics(
+                              label: widget.book.title,
+                              child: _buildBodyCrossfade(),
+                            ),
+                          ),
                         ),
-                      ),
-                    ),
-                    if (_showLeafFloatingStatus &&
-                        _pageMode == BookSourcePageMode.verticalScroll)
-                      ReaderFloatingStatusOverlay(
-                        palette: _readerTheme,
-                        status: _leafStatusController.value,
-                        safeArea: _readerSafeArea,
-                        horizontalPadding: _floatingStatusHorizontalPadding,
-                      ),
-                    ReaderChromeOverlay(
-                      palette: _readerTheme,
-                      visible: _controlsVisible,
-                      title: _chapters.isEmpty
-                          ? widget.book.title
-                          : _chapters[_chapterIndex.clamp(
-                                  0,
-                                  _chapters.length - 1,
-                                )]
-                                .title,
-                      statusBottom: _readerSafeArea.pageNumberBottom,
-                      showViewportStatus:
-                          _pageMode == BookSourcePageMode.verticalScroll &&
-                          _topBarStyle != ReaderTopBarStyle.hidden,
-                      showViewportTitle:
-                          _pageMode == BookSourcePageMode.verticalScroll &&
-                          _topBarStyle == ReaderTopBarStyle.reader,
-                      viewportTitleTop: _readerSafeArea.readerTopBarTop,
-                      viewportTitleKey: const ValueKey(
-                        'book-source-viewport-title',
-                      ),
-                      readerStatus: _leafStatusController.value,
-                      viewportStatusHorizontalPadding: math.max(
-                        24,
-                        _horizontalMargin,
-                      ),
-                      statusBuilder: _buildReaderStatusText,
-                      onBack: () => unawaited(_requestExit()),
-                      onBookmark: _chapters.isEmpty
-                          ? null
-                          : () => unawaited(_toggleCurrentBookmark()),
-                      onTableOfContents: _chapters.isEmpty
-                          ? null
-                          : _showCatalog,
-                      onReadAloud:
-                          _chapters.isEmpty || !isReaderAloudPlatformSupported
-                          ? null
-                          : () => unawaited(_showReaderAloudPanel()),
-                      readAloudTooltip: context.l10n.ttsReading,
-                      readAloudActive: _readerAloudActive,
-                      onAskAi: _chapters.isEmpty
-                          ? null
-                          : () => unawaited(_showAskAiPanel()),
-                      askAiTooltip: context.l10n.readerAskAi,
-                      onSettings: _showReadingSettings,
-                      backTooltip: MaterialLocalizations.of(
-                        context,
-                      ).backButtonTooltip,
-                      bookmarkTooltip: _currentPageIsBookmarked
-                          ? context.l10n.bookmarkRemoved
-                          : context.l10n.readerAddBookmark,
-                      tableOfContentsTooltip: context.l10n.readerToolbarTOC,
-                      settingsTooltip: context.l10n.readingSettings,
-                      bookmarked: _currentPageIsBookmarked,
-                      bookmarkBusy: _bookmarkBusy,
-                      topKey: const ValueKey('book-source-top-controls'),
-                      bottomKey: const ValueKey('book-source-bottom-controls'),
-                      statusKey: const ValueKey('book-source-reader-status'),
-                    ),
-                    if (_tapZoneEditorVisible)
-                      Positioned.fill(
-                        child: ReaderTapZoneEditorOverlay(
+                        if (_showLeafFloatingStatus &&
+                            _pageMode == BookSourcePageMode.verticalScroll)
+                          ReaderFloatingStatusOverlay(
+                            palette: _readerTheme,
+                            status: _leafStatusController.value,
+                            safeArea: _readerSafeArea,
+                            horizontalPadding: _floatingStatusHorizontalPadding,
+                          ),
+                        ReaderChromeOverlay(
                           palette: _readerTheme,
-                          zones: _tapZones,
-                          onZonesChanged: _setTapZones,
-                          onClose: () =>
-                              setState(() => _tapZoneEditorVisible = false),
+                          visible: _controlsVisible,
+                          title: _chapters.isEmpty
+                              ? widget.book.title
+                              : _chapters[_chapterIndex.clamp(
+                                      0,
+                                      _chapters.length - 1,
+                                    )]
+                                    .title,
+                          statusBottom: _readerSafeArea.pageNumberBottom,
+                          showViewportStatus:
+                              _pageMode == BookSourcePageMode.verticalScroll &&
+                              _topBarStyle != ReaderTopBarStyle.hidden,
+                          showViewportTitle:
+                              _pageMode == BookSourcePageMode.verticalScroll &&
+                              _topBarStyle == ReaderTopBarStyle.reader,
+                          viewportTitleTop: _readerSafeArea.readerTopBarTop,
+                          viewportTitleKey: const ValueKey(
+                            'book-source-viewport-title',
+                          ),
+                          readerStatus: _leafStatusController.value,
+                          viewportStatusHorizontalPadding: math.max(
+                            24,
+                            _horizontalMargin,
+                          ),
+                          statusBuilder: _buildReaderStatusText,
+                          onBack: () => unawaited(_requestExit()),
+                          onBookmark: _chapters.isEmpty
+                              ? null
+                              : () => unawaited(_toggleCurrentBookmark()),
+                          onTableOfContents: _chapters.isEmpty
+                              ? null
+                              : _showCatalog,
+                          onReadAloud:
+                              _chapters.isEmpty ||
+                                  !isReaderAloudPlatformSupported
+                              ? null
+                              : () => unawaited(_showReaderAloudPanel()),
+                          readAloudTooltip: context.l10n.ttsReading,
+                          readAloudActive: _readerAloudActive,
+                          onAskAi: _chapters.isEmpty
+                              ? null
+                              : () => unawaited(_showAskAiPanel()),
+                          askAiTooltip: context.l10n.readerAskAi,
+                          onSettings: _showReadingSettings,
+                          onToggleNightMode: _toggleNightMode,
+                          nightModeTooltip: context.l10n.toggleNightMode,
+                          nightModeActive:
+                              _readerTheme.brightness == Brightness.dark,
+                          backTooltip: MaterialLocalizations.of(
+                            context,
+                          ).backButtonTooltip,
+                          bookmarkTooltip: _currentPageIsBookmarked
+                              ? context.l10n.bookmarkRemoved
+                              : context.l10n.readerAddBookmark,
+                          tableOfContentsTooltip: context.l10n.readerToolbarTOC,
+                          settingsTooltip: context.l10n.readingSettings,
+                          bookmarked: _currentPageIsBookmarked,
+                          bookmarkBusy: _bookmarkBusy,
+                          topKey: const ValueKey('book-source-top-controls'),
+                          bottomKey: const ValueKey(
+                            'book-source-bottom-controls',
+                          ),
+                          statusKey: const ValueKey(
+                            'book-source-reader-status',
+                          ),
                         ),
-                      ),
-                  ],
+                        if (_tapZoneEditorVisible)
+                          Positioned.fill(
+                            child: ReaderTapZoneEditorOverlay(
+                              palette: _readerTheme,
+                              zones: _tapZones,
+                              onZonesChanged: _setTapZones,
+                              onClose: () =>
+                                  setState(() => _tapZoneEditorVisible = false),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
                 ),
               ),
             ),
@@ -2396,8 +2445,8 @@ class _BookSourceReaderPageState extends State<BookSourceReaderPage>
     if (imageUrls != null && imageUrls.isNotEmpty) {
       return BookSourceImageChapterView(
         imageUrls: imageUrls,
-        chapterTitle: _chapters[_chapterIndex.clamp(0, _chapters.length - 1)]
-            .title,
+        chapterTitle:
+            _chapters[_chapterIndex.clamp(0, _chapters.length - 1)].title,
         hasPreviousChapter: _chapterIndex > 0,
         hasNextChapter: _chapterIndex < _chapters.length - 1,
         onPreviousChapter: () =>
@@ -2412,8 +2461,8 @@ class _BookSourceReaderPageState extends State<BookSourceReaderPage>
     if (audioUrls != null && audioUrls.isNotEmpty) {
       return BookSourceAudioChapterView(
         audioUrls: audioUrls,
-        chapterTitle: _chapters[_chapterIndex.clamp(0, _chapters.length - 1)]
-            .title,
+        chapterTitle:
+            _chapters[_chapterIndex.clamp(0, _chapters.length - 1)].title,
         bookTitle: widget.book.title,
         hasPreviousChapter: _chapterIndex > 0,
         hasNextChapter: _chapterIndex < _chapters.length - 1,
@@ -2502,10 +2551,7 @@ class _BookSourceReaderPageState extends State<BookSourceReaderPage>
         }
       }
     }
-    headers.putIfAbsent(
-      'Referer',
-      () => widget.source.apiBaseUrl.toString(),
-    );
+    headers.putIfAbsent('Referer', () => widget.source.apiBaseUrl.toString());
     return headers;
   }
 

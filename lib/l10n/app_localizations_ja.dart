@@ -2927,6 +2927,9 @@ class AppLocalizationsJa extends AppLocalizations {
   String get readerThemeNight => '夜';
 
   @override
+  String get toggleNightMode => '夜間モード切替';
+
+  @override
   String get readerThemePureBlack => 'ピュアブラック';
 
   @override

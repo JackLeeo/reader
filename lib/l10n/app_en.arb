@@ -3121,6 +3121,7 @@
   "@readerThemeNight": {
     "description": "Night reading theme name"
   },
+  "toggleNightMode": "Toggle night mode",
   "readerThemePureBlack": "Pure black",
   "@readerThemePureBlack": {
     "description": "Pure black reading theme name"

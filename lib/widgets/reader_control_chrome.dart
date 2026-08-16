@@ -33,6 +33,9 @@ class ReaderChromeOverlay extends StatelessWidget {
     this.onAskAi,
     this.askAiTooltip,
     this.bookmarkBusy = false,
+    this.onToggleNightMode,
+    this.nightModeTooltip,
+    this.nightModeActive = false,
     this.topKey,
     this.bottomKey,
     this.statusKey,
@@ -66,6 +69,11 @@ class ReaderChromeOverlay extends StatelessWidget {
   final bool bookmarked;
   final bool readAloudActive;
   final bool bookmarkBusy;
+
+  /// 夜间模式快捷开关（yuedu_hd 风格：底部栏一键 day↔night）。
+  final VoidCallback? onToggleNightMode;
+  final String? nightModeTooltip;
+  final bool nightModeActive;
   final Key? topKey;
   final Key? bottomKey;
   final Key? statusKey;
@@ -244,6 +252,15 @@ class ReaderChromeOverlay extends StatelessWidget {
                           onPressed: onAskAi,
                           tooltip: askAiTooltip ?? '',
                           icon: Icons.auto_awesome_outlined,
+                        ),
+                      if (onToggleNightMode != null)
+                        ReaderControlIconButton(
+                          palette: palette,
+                          onPressed: onToggleNightMode,
+                          tooltip: nightModeTooltip ?? '',
+                          icon: nightModeActive
+                              ? Icons.light_mode_outlined
+                              : Icons.dark_mode_outlined,
                         ),
                       if (showSettingsAction)
                         ReaderControlIconButton(

@@ -2898,6 +2898,9 @@ class AppLocalizationsZh extends AppLocalizations {
   String get readerThemeNight => '黑夜';
 
   @override
+  String get toggleNightMode => '切换夜间模式';
+
+  @override
   String get readerThemePureBlack => '纯黑';
 
   @override
@@ -7074,6 +7077,9 @@ class AppLocalizationsZhTw extends AppLocalizationsZh {
 
   @override
   String get readerThemeNight => '黑夜';
+
+  @override
+  String get toggleNightMode => '切換夜間模式';
 
   @override
   String get readerThemePureBlack => '純黑';

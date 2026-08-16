@@ -178,6 +178,25 @@ class LegadoRuleEngine {
     for (final fallback in selector.split('||')) {
       final concatenated = <Object?>[];
       for (final part in fallback.split('&&')) {
+        // `%%` 交替合并（Legado OPERATOR_MERGE）：多段结果的元素
+        // 交叉拼接，常用于"标题列表 %% 链接列表"这类平行列表源。
+        if (part.contains('%%')) {
+          final segments = <List<Object?>>[];
+          for (final segment in part.split('%%')) {
+            segments.add(
+              await _evaluateSingle(
+                document,
+                context,
+                segment.trim(),
+                listMode: listMode,
+                jsVariables: jsVariables,
+                sourceUrl: sourceUrl,
+              ),
+            );
+          }
+          concatenated.addAll(_interleave(segments));
+          continue;
+        }
         concatenated.addAll(
           await _evaluateSingle(
             document,
@@ -195,6 +214,21 @@ class LegadoRuleEngine {
       }
     }
     return const [];
+  }
+
+  /// 交叉合并多段结果：各段元素轮流取值，段耗尽即跳过。
+  static List<Object?> _interleave(List<List<Object?>> segments) {
+    final merged = <Object?>[];
+    var index = 0;
+    var remaining = segments.any((segment) => segment.length > index);
+    while (remaining) {
+      for (final segment in segments) {
+        if (index < segment.length) merged.add(segment[index]);
+      }
+      index++;
+      remaining = segments.any((segment) => segment.length > index);
+    }
+    return merged;
   }
 
   Future<List<Object?>> _evaluateSingle(

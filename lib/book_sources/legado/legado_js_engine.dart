@@ -34,16 +34,28 @@ class LegadoJsEngine {
   }
 
   static LegadoJsEngine? _instance;
-  static bool _unavailable = false;
+  static DateTime? _unavailableSince;
+
+  /// 构造失败后的重试间隔：引擎初始化失败常是时机问题
+  /// （动态库加载竞态/内存压力），永久放弃会让含 JS 的源
+  /// 在整个进程生命周期内全部失败，定时重试可自愈。
+  static const Duration _unavailableRetryAfter = Duration(seconds: 30);
 
   /// 全局共享实例；平台不支持时返回 null，调用方需同步降级。
   static LegadoJsEngine? get instance {
-    if (_unavailable) return null;
+    final unavailableSince = _unavailableSince;
+    if (unavailableSince != null) {
+      if (DateTime.now().difference(unavailableSince) < _unavailableRetryAfter) {
+        return null;
+      }
+      // 冷却结束，重置标记重试一次。
+      _unavailableSince = null;
+    }
     if (_instance != null) return _instance;
     try {
       return _instance = LegadoJsEngine._();
     } catch (error) {
-      _unavailable = true;
+      _unavailableSince = DateTime.now();
       return null;
     }
   }

@@ -21,6 +21,14 @@ class LegadoRuntime {
   final LegadoTransport _transport;
   final LegadoRuleEngine _rules = const LegadoRuleEngine();
 
+  /// 详情页响应短期缓存：getBook 与 getChapters(_tocUrl) 共享，
+  /// 避免同一 bookId 在一次阅读流程里被请求两次。
+  /// 带一次性 token / 防重放的站点第二次请求会 404，这是
+  /// "详情能看到、目录拉不到"的主因（对照 yuedu_hd 只请求一次）。
+  static const Duration _detailCacheTtl = Duration(seconds: 90);
+  static const int _detailCacheCapacity = 8;
+  final Map<String, _CachedDetailPage> _detailCache = {};
+
   void close({bool force = true}) {
     final transport = _transport;
     if (transport is LegadoHttpTransport) transport.close(force: force);
@@ -185,6 +193,7 @@ class LegadoRuntime {
     await _ensureRunnable(source);
     final vars = _jsVariables(source);
     final response = await _request(source, bookId);
+    _cacheDetailPage(bookId, response);
     final document = LegadoRuleDocument.parse(response.body, response.finalUri);
     final rule = source.rule('ruleBookInfo');
     final init = _optionalRule(rule, 'init');
@@ -282,10 +291,20 @@ class LegadoRuntime {
     final chapters = <BookSourceChapter>[];
     final seenPages = <String>{};
     final seenChapters = <String>{};
-    var nextUrl = tocUrl;
-    for (var hop = 0; hop < _maxPageHops && nextUrl.isNotEmpty; hop++) {
-      if (!seenPages.add(nextUrl)) break;
-      final response = await _request(source, nextUrl);
+    // 队列式分页：nextTocUrl 支持逗号多值（对照 yuedu_hd split(',')），
+    // 一页可同时派生多个后续页（数字目录/多线路分页源）。
+    final pendingPages = <String>[tocUrl];
+    for (var hop = 0; hop < _maxPageHops && pendingPages.isNotEmpty; hop++) {
+      final pageUrl = pendingPages.removeAt(0);
+      if (pageUrl.isEmpty || !seenPages.add(pageUrl)) continue;
+      final LegadoResponse response;
+      try {
+        response = await _request(source, pageUrl);
+      } on BookSourceProtocolException catch (error) {
+        // 后续分页 404/断连视为自然结束，保留已抓章节（yuedu_hd 行为）。
+        if (hop > 0 && _isPaginationEndError(error)) break;
+        rethrow;
+      }
       final document = LegadoRuleDocument.parse(
         response.body,
         response.finalUri,
@@ -324,14 +343,23 @@ class LegadoRuntime {
           BookSourceChapter(id: url, title: title, order: chapters.length),
         );
       }
-      nextUrl = await _url(
+      final nextRule = _optionalRule(rule, 'nextTocUrl');
+      if (nextRule.isEmpty) continue;
+      final nextRaw = await _rules.evaluateString(
         document,
         null,
-        rule,
-        'nextTocUrl',
+        nextRule,
         jsVariables: vars,
         sourceUrl: source.url,
       );
+      for (final candidate in nextRaw.split(',')) {
+        final trimmed = candidate.trim();
+        if (trimmed.isEmpty || trimmed == '-') continue;
+        final resolved = response.finalUri.resolve(trimmed);
+        if (resolved.scheme != 'http' && resolved.scheme != 'https') continue;
+        if (seenPages.contains(resolved.toString())) continue;
+        pendingPages.add(resolved.toString());
+      }
     }
     if (chapters.isEmpty) {
       throw const BookSourceProtocolException(
@@ -345,6 +373,7 @@ class LegadoRuntime {
     RegisteredBookSource registered, {
     required String bookId,
     required String chapterId,
+    String? nextChapterId,
   }) async {
     final source = _source(registered);
     await _ensureRunnable(source);
@@ -356,7 +385,14 @@ class LegadoRuntime {
     var nextUrl = chapterId;
     for (var hop = 0; hop < _maxPageHops && nextUrl.isNotEmpty; hop++) {
       if (!seenPages.add(nextUrl)) break;
-      final response = await _request(source, nextUrl);
+      final LegadoResponse response;
+      try {
+        response = await _request(source, nextUrl);
+      } on BookSourceProtocolException catch (error) {
+        // 后续分页 404/断连视为正文自然结束，保留已抓段落。
+        if (hop > 0 && _isPaginationEndError(error)) break;
+        rethrow;
+      }
       lastFinalUri = response.finalUri;
       final document = LegadoRuleDocument.parse(
         response.body,
@@ -384,6 +420,13 @@ class LegadoRuntime {
         jsVariables: vars,
         sourceUrl: source.url,
       );
+      // yuedu_hd 行为：解析出的"下一页"就是下一章的地址时，
+      // 说明本章已到末尾，停止抓取避免把下一章内容并入本章。
+      if (nextChapterId != null &&
+          nextChapterId.isNotEmpty &&
+          nextUrl == nextChapterId) {
+        break;
+      }
     }
     if (parts.isEmpty) {
       throw const BookSourceProtocolException(
@@ -447,12 +490,50 @@ class LegadoRuntime {
     return urls;
   }
 
+  void _cacheDetailPage(String bookId, LegadoResponse response) {
+    _detailCache.remove(bookId);
+    _detailCache[bookId] = _CachedDetailPage(
+      body: response.body,
+      finalUri: response.finalUri,
+      cachedAt: DateTime.now(),
+    );
+    while (_detailCache.length > _detailCacheCapacity) {
+      _detailCache.remove(_detailCache.keys.first);
+    }
+  }
+
+  LegadoResponse? _cachedDetailPage(String bookId) {
+    final entry = _detailCache[bookId];
+    if (entry == null) return null;
+    if (DateTime.now().difference(entry.cachedAt) > _detailCacheTtl) {
+      _detailCache.remove(bookId);
+      return null;
+    }
+    return LegadoResponse(body: entry.body, finalUri: entry.finalUri);
+  }
+
+  /// 分页目录/正文的"翻页失败视为自然结束"判定：
+  /// 首页(hop==0)失败仍需上抛，后续页 404/410/连接失败只终止翻页。
+  /// 对照 yuedu_hd：目录分页 404 视为结束并保留已抓章节。
+  static bool _isPaginationEndError(Object error) {
+    if (error is! BookSourceProtocolException) return false;
+    final message = error.message;
+    return message.startsWith('Legado source returned HTTP 40') ||
+        message.startsWith('Legado source returned HTTP 41') ||
+        message.startsWith('Could not connect');
+  }
+
   Future<String> _tocUrl(LegadoBookSource source, String bookId) async {
     final rule = source.rule('ruleBookInfo');
     final tocRule = _optionalRule(rule, 'tocUrl');
     if (tocRule.isEmpty) return bookId;
     final vars = _jsVariables(source);
-    final response = await _request(source, bookId);
+    // 复用 getBook 刚抓的详情页，避免二次请求（防重放站点 404）。
+    final cached = _cachedDetailPage(bookId);
+    final response = cached ?? await _request(source, bookId);
+    if (cached == null) {
+      _cacheDetailPage(bookId, response);
+    }
     final document = LegadoRuleDocument.parse(response.body, response.finalUri);
     final init = _optionalRule(rule, 'init');
     final context = init.isEmpty
@@ -504,7 +585,7 @@ class LegadoRuntime {
       jsVariables: vars,
       sourceUrl: sourceUrl,
     );
-    final url = await _url(
+    var url = await _url(
       document,
       context,
       rule,
@@ -512,6 +593,17 @@ class LegadoRuntime {
       jsVariables: vars,
       sourceUrl: sourceUrl,
     );
+    // yuedu_hd 行为：bookUrl 为空时回退用 tocUrl 作为书籍地址。
+    if (url.isEmpty) {
+      url = await _url(
+        document,
+        context,
+        rule,
+        'tocUrl',
+        jsVariables: vars,
+        sourceUrl: sourceUrl,
+      );
+    }
     if (title.isEmpty || url.isEmpty) return null;
     return BookSourceBook(
       id: url,
@@ -650,6 +742,28 @@ class LegadoRuntime {
       working = LegadoVariableSyntax.expandGetsStrict(
         working,
         (name) => LegadoVariableStore.instance.get(sourceUrl, name),
+      );
+    }
+
+    // URL 模板里的 `@put:{name:literal}`：字面量形式先存变量池再剥离；
+    // 含规则语法（如 class.xxx）的无法离线求值，仅剥离避免误拦。
+    if (sourceUrl.isNotEmpty && working.contains('@put:')) {
+      working = working.replaceAllMapped(
+        RegExp(r'@put:\{([^{}:]+):([\s\S]*?)\}'),
+        (match) {
+          final name = match.group(1)!.trim();
+          final literal = match.group(2)!.trim();
+          final isRuleish = literal.contains('@') ||
+              literal.contains('{{') ||
+              literal.contains('//');
+          if (name.isNotEmpty &&
+              literal.isNotEmpty &&
+              !isRuleish &&
+              source != null) {
+            LegadoVariableStore.instance.put(sourceUrl, name, literal);
+          }
+          return '';
+        },
       );
     }
 
@@ -865,6 +979,19 @@ String _requiredRule(Map<String, dynamic> rules, String key) {
     );
   }
   return rule;
+}
+
+/// 详情页响应的短期缓存条目，供 getBook/getChapters 共享。
+class _CachedDetailPage {
+  const _CachedDetailPage({
+    required this.body,
+    required this.finalUri,
+    required this.cachedAt,
+  });
+
+  final String body;
+  final Uri finalUri;
+  final DateTime cachedAt;
 }
 
 String _optionalRule(Map<String, dynamic> rules, String key) {
