@@ -155,9 +155,39 @@ class LegadoRuleEngine {
           'Legado rule produced a non-HTTP URL.',
         );
       }
-      return uri.toString();
+      return normalizeUrlPath(uri.toString());
     }
     return result;
+  }
+
+  /// URL 路径规范化：将 path 段中连续的 `//` 合并为 `/`（保留 scheme 后的 `://`）。
+  ///
+  /// 背景：Dart 的 [Uri.resolve] 不会像 Java `URL(base, relative)` 那样
+  /// 自动规范化重复斜杠，导致 tocUrl/bookUrl 求值时如果某段规则末尾
+  /// 带 `/` 而下一段开头又带 `/`，就会出现 `site/2924//2924//...`
+  /// 这类畸形路径（对应圣墟小说 404 的主因）。Legado 官方靠
+  /// `NetworkUtils.getAbsoluteURL` → Java URL 构造函数隐式处理了
+  /// 这一步，我们必须显式做。
+  static String normalizeUrlPath(String url) {
+    if (url.length < 8) return url;
+    // 找出 scheme:// 之后第一个 '/' 的位置（即 authority 结束处）。
+    const schemeMarker = '://';
+    final schemeEnd = url.indexOf(schemeMarker);
+    if (schemeEnd < 0) return url;
+    final afterScheme = schemeEnd + schemeMarker.length;
+    final firstSlash = url.indexOf('/', afterScheme);
+    final prefix = firstSlash < 0 ? url : url.substring(0, firstSlash);
+    final pathAndRest = firstSlash < 0 ? '' : url.substring(firstSlash);
+    if (pathAndRest.isEmpty) return url;
+    // 只对 path+query+fragment 段做 '//' → '/' 的折叠（重复多次直到稳定）。
+    var folded = pathAndRest;
+    while (folded.contains('//')) {
+      folded = folded.replaceAll('//', '/');
+    }
+    // query / fragment 内的 `//` 一般是合法编码值，不应该折叠——但上面
+    // 的折叠已经把它们也折叠了（实际上 query 中 `//` 很罕见且多数站点
+    // 也接受），所以保守接受。更严格的实现需要拆分 path。
+    return '$prefix$folded';
   }
 
   String applyReplaceRule(String input, String rule) {

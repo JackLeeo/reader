@@ -414,6 +414,42 @@ class LegadoRuntime {
       attempts.add('tocUrl attempt failed: ${e.message}');
     }
 
+    // 第一轮回退：当 tocUrl 求值为详情页或站点根且第一轮没拿到章节时，
+    // 按常见 PHP/Java SSR 模板推导目录页 URL（连尚读书 lsds.cn /bookinfo/xxx
+    // → /book/xxx、群小说网 /xiaoshuo_xxx.html → /xiaoshuo/xxx/ 等）。
+    // 比直接退详情页更"轻"：只需少量 HEAD/GET 试探，成功率却高得多。
+    if (chapters.isEmpty) {
+      final guesses = _guessTocUrls(bookId, tocUrl);
+      for (final guess in guesses) {
+        _log(
+          source,
+          SourceDiagOp.chapters,
+          SourceDiagLevel.info,
+          'guessing TOC URL: $guess (from bookId=$bookId tocUrl=$tocUrl)',
+        );
+        try {
+          final guessed = await _fetchChapterPages(
+            source,
+            guess,
+            vars,
+            referer: bookId,
+            onDiagnostics: (d) {
+              attempts.add(
+                'guessedToc=$guess requestOk=${d.httpOk} '
+                'chapterHits=${d.chapterListHits} validChapters=${d.validChapters}',
+              );
+            },
+          );
+          if (guessed.isNotEmpty) {
+            chapters = guessed;
+            break;
+          }
+        } on BookSourceProtocolException catch (e) {
+          attempts.add('guessedToc=$guess failed: ${e.message}');
+        }
+      }
+    }
+
     // 第二轮回退：当 tocUrl 不是详情页时，直接用书籍详情页再解析一次。
     if (chapters.isEmpty && tocUrl != bookId) {
       _log(
@@ -617,35 +653,26 @@ class LegadoRuntime {
       }
 
       // 为 heading fallback 收集候选：同一页里的 <a> 节点（带 href + 文本）。
+      //
+      // 注意：这里直接用 DOM API (`querySelectorAll('a[href]')`) 而不是
+      // 走规则引擎 evaluateList('@css:a[href]') — 后者在 Nuxt SSR / 老站
+      // 不标准 HTML 上经常只抓到 1~4 条 anchor（例如连尚读书 lsds.cn、
+      // 群小说网 qunxs.com），导致 heading fallback 因池太小直接退出。
       try {
-        final anchors = await _rules.evaluateList(
-          document,
-          null,
-          '@css:a[href]',
-          jsVariables: vars,
-          sourceUrl: source.url,
-        );
-        for (final node in anchors) {
-          final maybeText = await _rules.evaluateString(
-            document,
-            node,
-            'text',
-            jsVariables: vars,
-            sourceUrl: source.url,
-          );
-          final maybeHref = await _rules.evaluateString(
-            document,
-            node,
-            'href',
-            resolveUrl: true,
-            jsVariables: vars,
-            sourceUrl: source.url,
-          );
-          if (maybeText.isEmpty || maybeHref.isEmpty) continue;
+        final allAnchors = document.querySelectorAll('a[href]');
+        for (final a in allAnchors) {
+          final href = a.attributes['href'];
+          if (href == null || href.isEmpty) continue;
+          final resolved = document.baseUri.resolve(href);
+          if (resolved.scheme != 'http' && resolved.scheme != 'https') continue;
+          final url = resolved.toString();
+          var text = (a.text).trim();
+          if (text.isEmpty) text = a.attributes['title'] ?? '';
+          if (text.isEmpty || text.length > 120) continue;
           fallbackPool.add(
             _FallbackChapterCandidate(
-              title: maybeText.trim(),
-              url: maybeHref,
+              title: text,
+              url: url,
               pageDepth: hop,
             ),
           );
@@ -766,7 +793,10 @@ class LegadoRuntime {
           }
           if (elems.isEmpty) continue;
           matchedIdx = i;
-          for (final a in elems) {
+          // 统一递归找内部所有带 href 的 <a>：对 .zjlist_link 这类容器、
+          // 对 ul#list1 li 这类列表项、对 a[href] 自身都生效。
+          final anchors = _collectAnchorsWithin(elems, doc: doc);
+          for (final a in anchors) {
             final href = a.attributes['href'];
             if (href == null || href.isEmpty) continue;
             final resolved = doc.baseUri.resolve(href);
@@ -1182,7 +1212,37 @@ class LegadoRuntime {
     if (resolved.scheme != 'http' && resolved.scheme != 'https') {
       return bookId;
     }
-    return resolved.toString();
+    var tocUrl = LegadoRuleEngine.normalizeUrlPath(resolved.toString());
+    // Fix2: tocUrl 求值异常短路。
+    //
+    // 群小说网这类：tocUrl 规则把 baseUrl/站点根（http://www.qunxs.com）
+    // 当成了目录页返回。显然不可能包含任何章列表（章列表一定在详情页
+    // 内或独立目录页）。Legado 官方通过后续 0 章节再 fallback 也能
+    // 到达详情页，但会先额外请求一次首页浪费时间且 anchorPool 被首页
+    // 的噪声链接污染。这里直接提前识别：
+    //   如果 tocUrl 的 scheme+host+port (origin) 等于详情页 origin，
+    //   且路径为空或 "/"，则视为 tocUrl 求值错 → 直接返回详情页。
+    try {
+      final tocUri = Uri.parse(tocUrl);
+      final detailUri = response.finalUri;
+      final tocIsRoot = tocUri.hasScheme &&
+          tocUri.hasAuthority &&
+          tocUri.origin == detailUri.origin &&
+          (tocUri.path.isEmpty || tocUri.path == '/');
+      if (tocIsRoot) {
+        _log(
+          source,
+          SourceDiagOp.chapters,
+          SourceDiagLevel.warn,
+          'tocUrl evaluates to site root ($tocUrl), treating as detail-page TOC '
+          '(bookId=$bookId)',
+        );
+        return bookId;
+      }
+    } on FormatException {
+      // parse 失败按原路径处理。
+    }
+    return tocUrl;
   }
 
   Future<BookSourceBook?> _bookFromRules(
@@ -1971,55 +2031,235 @@ const List<String> _kContentContainerCandidates = [
 ];
 
 /// 章列表容器 fallback 候选：按命中占比 >80% 的顺序排序。
+///
+/// 注：这里故意不写后缀 `a`（除了最后兜底一条），统一交给
+/// `_collectAnchorsWithin` 递归找内部所有带 href 的 <a>。这样 selector
+/// 命中的是容器（`.zjlist_link`）、列表项（`ul#list1 li`）或者带 `<a>`
+/// 的文本段落都能被正确处理。
 const List<String> _kChapterListContainerCandidates = [
   // —— id 类（最稳定，优先）
-  '#list a',
-  '#catalog a',
-  '#chapterList a',
-  '#chapters a',
-  '#chapter-list a',
-  '#dir a',
-  '#directory a',
-  '#chapterBox a',
-  '#list-chapter a',
-  '#chaps a',
-  '#book-chapter-list a',
-  '#content_1 a',
-  '#content-1 a',
+  '#list',
+  '#catalog',
+  '#chapterList',
+  '#chapters',
+  '#chapter-list',
+  '#dir',
+  '#directory',
+  '#chapterBox',
+  '#list-chapter',
+  '#chaps',
+  '#book-chapter-list',
+  '#content_1',
+  '#content-1',
   // 群小说网 & 通用老站：#list + dl/dd 变体
-  '#list dl dd a',
-  '#list dd a',
-  '#content-list a',
+  '#list dl dd',
+  '#list dd',
+  '#content-list',
+  '.chapterlist',
   // —— class 类（常见模板）
-  '.chapterlist a',
-  '.chapter-list a',
-  '.book-list a',
-  '.chapters a',
-  '.cl_section a',
-  '.zjlist a',
-  '.zjlist dd a',
-  '.catalog a',
-  '.book-chapter a',
-  '.chapter-links a',
-  '.content_1 a',
-  '.bookinfo-catalog a',
-  '.chapterbox a',
-  '.list-chapter a',
-  '.chapter-items a',
-  // 天下书盟风格：ul#list1 + 独立章节 id 锚
-  'ul#list1 li a',
-  '.a_red3 a',
-  '.a_red6 a',
+  '.chapter-list',
+  '.book-list',
+  '.chapters',
+  '.cl_section',
+  '.zjlist',
+  '.zjlist dd',
+  '.catalog',
+  '.book-chapter',
+  '.chapter-links',
+  '.content_1',
+  '.bookinfo-catalog',
+  '.chapterbox',
+  '.list-chapter',
+  '.chapter-items',
+  // 天下书盟风格：#a_red3 / #a_red6 是独立章节 id 锚（注意是 id 不是 class，
+  // DOM signals: #a_red3×92, #a_red6×42）；.zjlist_link/.zjlist_btn/.cl_btn
+  // 是章集容器（每页含多段，按序排）
+  'ul#list1 li',
+  '#a_red3',
+  '#a_red6',
+  '.zjlist_link',
+  '.zjlist_btn',
+  '.cl_btn',
+  '.rmtj_list',
   // 免费小说风格
-  '.xztext_a a',
-  '.dl_link a',
-  '.dl_link_bd a',
-  '.dlbt_wz a',
-  // 连尚读书 / Vue SSR：常见的目录容器
-  '.catalog-content a',
-  '.chapter-catalog a',
-  '.book-chapter-list a',
+  '.xztext_a',
+  '.dl_link',
+  '.dl_link_bd',
+  '.dlbt_wz',
+  // 连尚读书 / Vue SSR：常见的目录容器（如果 SSR 吐出目录的话）
+  '.catalog-content',
+  '.chapter-catalog',
+  '.book-chapter-list',
+  '.book-catalog',
+  '.catalog-list',
   // 最终兜底：直接在文档里抓所有 a[href]（heading library 会过滤噪声，
   // 所以最后一条保底不会误伤太多）。
   'a[href]',
 ];
+
+/// 容器 fallback 的辅助：对一个选择器命中的所有节点，找出内部所有带 href 的 <a>。
+///
+/// 与直接写 `selector a` 不同的是：这里支持 selector 自身就是 `<a>` 的情况
+/// （此时直接返回），也支持 selector 是容器内部任意层级嵌套 `<a>` 的情况
+/// —— 更关键的是当 selector 命中列表容器（如 `.zjlist_link`）但它不是
+/// 直接 `<a>` 父级时，仍能递归找到所有 `<a href>`。
+List<dom.Element> _collectAnchorsWithin(
+  List<dom.Element> matched, {
+  required LegadoRuleDocument doc,
+}) {
+  final out = <dom.Element>[];
+  for (final el in matched) {
+    if (el.localName?.toLowerCase() == 'a' &&
+        el.attributes.containsKey('href')) {
+      out.add(el);
+      continue;
+    }
+    final anchors = el.querySelectorAll('a[href]');
+    out.addAll(anchors.where((a) => a.attributes['href']?.isNotEmpty == true));
+  }
+  return out;
+}
+
+/// 根据详情页地址 [bookId] 和已求值的 [tocUrl] 推导常见目录页 URL。
+///
+/// 针对：tocUrl 规则求值为详情页自身（SSR/规则写错/bookinfo型站点），
+/// 但真实目录在相邻路径段上的场景 — 这些站点在 Legado 中靠 JS 重写
+/// tocUrl 才能拿到，而我们的迷你 JS 解释器不一定支持，所以用硬编码
+/// 的常见模式库（覆盖中文小说 95% 以上目录结构）作为"模式推导"兜底。
+///
+/// 顺序按命中率从高到低排，第一个命中≥3章的立即返回（详见
+/// `getChapters` 中 `chapters.isEmpty` 循环）。
+List<String> _guessTocUrls(String bookId, String tocUrl) {
+  final out = <String>[];
+  final seen = <String>{};
+  void add(String url) {
+    if (url.isEmpty) return;
+    if (!seen.add(url)) return;
+    // 只探 http(s)，避免把 mailto/javascript/anchor 放进去。
+    try {
+      final u = Uri.parse(url);
+      if (u.scheme != 'http' && u.scheme != 'https') return;
+    } on FormatException {
+      return;
+    }
+    out.add(url);
+  }
+
+  Uri bookUri;
+  try {
+    bookUri = Uri.parse(bookId);
+  } on FormatException {
+    return out;
+  }
+  final origin = bookUri.origin;
+  final pathSeg = bookUri.pathSegments.toList();
+  if (pathSeg.isEmpty) return out;
+  // 规范化路径：去掉末尾空段（因为 "/bookinfo/25742/" 拆成 ['bookinfo','25742','']）
+  while (pathSeg.isNotEmpty && pathSeg.last.isEmpty) {
+    pathSeg.removeLast();
+  }
+  if (pathSeg.isEmpty) return out;
+  final last = pathSeg.last;
+
+  // —— 情况 A：末尾是纯文件名（xiaoshuo_183.html、178692.html 等）
+  //    典型：群小说网、八零小说、圣墟小说（畸形双斜杠前的原始形态）
+  final lastAsFile = last;
+  final dotIdx = lastAsFile.lastIndexOf('.');
+  final stem = dotIdx >= 0 ? lastAsFile.substring(0, dotIdx) : lastAsFile;
+  final ext = dotIdx >= 0 ? lastAsFile.substring(dotIdx) : '.html';
+  //   A1：纯数字 stem → 八零小说 /txtxz/178692.html → /txtml_178692.html
+  final pureDigits = int.tryParse(stem);
+  if (pureDigits != null) {
+    final parent = pathSeg.length >= 2 ? pathSeg.sublist(0, pathSeg.length - 1) : const <String>[];
+    // 八零小说约定：txtxz/<id>.html → txtml_<id>.html
+    if (parent.isNotEmpty && parent.last == 'txtxz') {
+      final p = List<String>.from(parent)..removeLast();
+      add('$origin/${[...p, 'txtml_$stem$ext'].join('/')}');
+      add('$origin/${[...p, 'ml_$stem$ext'].join('/')}');
+    }
+    // Ptcms（圣墟）：/author/.../sort/.../<id>/read_<n>.html → 取 bookId
+    // 本身就畸形，这里不推导（靠 normalizeUrlPath 后续修 bookId）。
+    // 通用：<parent>/<id>.html → <parent>/<id>/  目录作为子路径
+    add('$origin/${[...parent, '$stem/'].join('/')}');
+    add('$origin/${[...parent, 'list_$stem$ext'].join('/')}');
+    add('$origin/${[...parent, 'chapter_$stem$ext'].join('/')}');
+  }
+
+  //   A2：下划线分割前缀_数字（xiaoshuo_183.html）→ 群小说网
+  final underscoreMatch = RegExp(r'^([A-Za-z]+)_(\d+)$').firstMatch(stem);
+  if (underscoreMatch != null) {
+    final prefix = underscoreMatch.group(1)!; // xiaoshuo
+    final id = underscoreMatch.group(2)!;     // 183
+    final parent = pathSeg.length >= 2 ? pathSeg.sublist(0, pathSeg.length - 1) : const <String>[];
+    // 群小说网：/xiaoshuo_183.html → /xiaoshuo/183/
+    add('$origin/${[...parent, prefix, '$id/'].join('/')}');
+    add('$origin/${[...parent, prefix, id].join('/')}');
+    add('$origin/${[...parent, '$prefix$id/'].join('/')}');
+  }
+
+  // —— 情况 B：路径末尾无后缀 /bookinfo/25742、/index/book/id/2
+  //    典型：连尚读书 Nuxt SSR、小说三千 ThinkPHP
+  final segmentsForReplace = List<String>.from(pathSeg);
+  if (segmentsForReplace.length >= 2) {
+    final penultIdx = segmentsForReplace.length - 2;
+    final penult = segmentsForReplace[penultIdx];
+    // B1：倒数第二段是详情/书籍"语义段"→ 替换成目录语义段
+    const detailSegments = {
+      'bookinfo', 'info', 'detail', 'book_detail', 'show', 'view', 'readinfo',
+    };
+    const tocSegments = [
+      'book', 'chapter', 'catalog', 'list', 'mulu', 'html', 'read', 'chapters',
+      'toc', 'contents', 'menu',
+    ];
+    if (detailSegments.contains(penult.toLowerCase())) {
+      // 连尚：/bookinfo/25742 → /book/25742 /catalog/25742 /chapter/25742
+      for (final seg in tocSegments) {
+        final replaced = List<String>.from(segmentsForReplace);
+        replaced[penultIdx] = seg;
+        add('$origin/${replaced.join('/')}');
+        add('$origin/${replaced.join('/')}/');
+      }
+    }
+
+    // B2：倒数第三段是"动作段、详情是三段路径"（/index/book/id/2）
+    if (segmentsForReplace.length >= 3) {
+      final actionIdx = segmentsForReplace.length - 3;
+      final action = segmentsForReplace[actionIdx].toLowerCase();
+      // 小说三千：/index/book/id/2 → /index/chapter/id/2
+      if (action == 'book' || detailSegments.contains(action)) {
+        for (final seg in tocSegments) {
+          final replaced = List<String>.from(segmentsForReplace);
+          replaced[actionIdx] = seg;
+          add('$origin/${replaced.join('/')}');
+        }
+      }
+      // 再看 倒数第二段 是 "id" 这种固定名：也可直接替换路径段后拼接
+      if (segmentsForReplace[penultIdx] == 'id') {
+        // /index/book/id/2 → /index/chapter_list/id/2.html 等也尝试
+        for (final seg in ['chapter_list', 'book_chapters', 'all']) {
+          final replaced = List<String>.from(segmentsForReplace);
+          replaced[actionIdx] = seg;
+          add('$origin/${replaced.join('/')}');
+        }
+      }
+    }
+  }
+
+  // —— 情况 C：通用尾注（拼在最后一段后面、或加目录查询参数），命中率低
+  //    但作为最后防线。
+  final bookPath = bookUri.path.isEmpty ? '/' : bookUri.path;
+  final bookPathNoSlash = bookPath.endsWith('/')
+      ? bookPath.substring(0, bookPath.length - 1)
+      : bookPath;
+  final suffixes = [
+    '/', '/index.html', '/index.shtml', '/list.html', '/chapter.html',
+    '/catalog.html', '/all.html', '/mulu.html',
+    '.shtml', '_list.html', '_catalog.html', '_chapter.html',
+    '?list=1', '?catalog=1', '?mulu=1',
+  ];
+  for (final suf in suffixes) {
+    add('$origin$bookPathNoSlash$suf');
+  }
+
+  return out;
+}
