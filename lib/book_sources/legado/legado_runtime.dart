@@ -641,7 +641,14 @@ class LegadoRuntime {
             }
           }
         }
-        if (title.isEmpty || url.isEmpty || !seenChapters.add(url)) continue;
+        // chapterUrl 最终兜底：url 仍为空时用当前页 URL 作为章节 URL
+        // （对照 pusidun/legado BookChapterList:232 `bookChapter.url = baseUrl`）。
+        // 这处理 chapterUrl 规则完全不存在且 context 无 <a> 的场景——
+        // 这种源章节内容就挂在目录页本身，用目录页 URL 去取内容即可。
+        if (url.isEmpty) {
+          url = response.finalUri.toString();
+        }
+        if (title.isEmpty || !seenChapters.add(url)) continue;
         if (chapters.length >= _maxChapters) {
           throw const BookSourceProtocolException(
             'Compatible source chapter catalog exceeds the supported limit.',

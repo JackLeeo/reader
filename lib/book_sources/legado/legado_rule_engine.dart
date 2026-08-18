@@ -148,6 +148,11 @@ class LegadoRuleEngine {
       }
     }
     result = result.trim();
+    // HTML 实体反转义（对照 pusidun/legado EscapeUtils.unescapeHtml）。
+    // 只在结果含 & 时执行，避免无实体的纯文本白白分配。
+    if (result.contains('&')) {
+      result = _unescapeHtml(result);
+    }
     if (resolveUrl && result.isNotEmpty) {
       final uri = document.baseUri.resolve(result);
       if (uri.scheme != 'http' && uri.scheme != 'https') {
@@ -188,6 +193,57 @@ class LegadoRuleEngine {
     // 的折叠已经把它们也折叠了（实际上 query 中 `//` 很罕见且多数站点
     // 也接受），所以保守接受。更严格的实现需要拆分 path。
     return '$prefix$folded';
+  }
+
+  /// HTML 实体反转义（对照 pusidun/legado EscapeUtils.unescapeHtml）。
+  ///
+  /// 处理常见命名实体（`&amp;` → `&`、`&lt;` → `<`、`&gt;` → `>`、
+  /// `&quot;` → `"`、`&apos;` → `'`、`&nbsp;` → ' '）和十进制/十六进制
+  /// 数字实体（`&#160;` / `&#xA0;`）。不做完整 HTML 解析——只做字符串
+  /// 级替换，足够覆盖小说站点标题/简介里 99% 的实体场景。
+  static String _unescapeHtml(String input) {
+    if (!input.contains('&')) return input;
+    var result = input;
+    // 命名实体（按出现频率排序）
+    const namedEntities = {
+      '&amp;': '&',
+      '&lt;': '<',
+      '&gt;': '>',
+      '&quot;': '"',
+      '&apos;': "'",
+      '&nbsp;': ' ',
+      '&hellip;': '…',
+      '&mdash;': '—',
+      '&ndash;': '–',
+      '&ldquo;': '\u201C',
+      '&rdquo;': '\u201D',
+      '&lsquo;': '\u2018',
+      '&rsquo;': '\u2019',
+      '&middot;': '·',
+      '&ensp;': '\u2002',
+      '&emsp;': '\u2003',
+    };
+    for (final entry in namedEntities.entries) {
+      if (result.contains(entry.key)) {
+        result = result.replaceAll(entry.key, entry.value);
+      }
+    }
+    // 数字实体：&#NNN; 和 &#xHHH;
+    result = result.replaceAllMapped(
+      RegExp(r'&#(\d+);'),
+      (m) {
+        final code = int.tryParse(m.group(1)!);
+        return code != null ? String.fromCharCode(code) : m.group(0)!;
+      },
+    );
+    result = result.replaceAllMapped(
+      RegExp(r'&#x([0-9A-Fa-f]+);'),
+      (m) {
+        final code = int.tryParse(m.group(1)!, radix: 16);
+        return code != null ? String.fromCharCode(code) : m.group(0)!;
+      },
+    );
+    return result;
   }
 
   String applyReplaceRule(String input, String rule) {
@@ -287,6 +343,9 @@ class LegadoRuleEngine {
     }
     if (normalized.toLowerCase().startsWith('@css:')) {
       normalized = normalized.substring(5).trimLeft();
+    } else if (normalized.startsWith('@@')) {
+      // @@ 前缀：强制 CSS 模式（pusidun/legado SourceRule 行为）
+      normalized = normalized.substring(2).trimLeft();
     }
     if (normalized.toLowerCase().startsWith('@xpath:')) {
       normalized = normalized.substring(7).trimLeft();
