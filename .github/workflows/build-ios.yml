@@ -1,0 +1,161 @@
+name: Build iOS (TrollStore / Sideload)
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      build_mode:
+        description: 'Build mode'
+        required: false
+        default: 'release'
+        type: choice
+        options: ['debug', 'release']
+
+jobs:
+  build-ios:
+    runs-on: macos-15
+    timeout-minutes: 60
+    permissions:
+      contents: write  # needed by softprops/action-gh-release to create releases
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: '3.47.0'
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios,aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Locate fjs package
+        id: fjs_locate
+        run: |
+          FJS_SRC=$(find "$HOME/.pub-cache/hosted/pub.dev" -maxdepth 1 -name "fjs-*" -type d 2>/dev/null | head -1)
+          if [ -z "$FJS_SRC" ]; then
+            FJS_SRC=$(find "$HOME/Library/Application Support/Pub/Cache/hosted/pub.dev" -maxdepth 1 -name "fjs-*" -type d 2>/dev/null | head -1)
+          fi
+          if [ -z "$FJS_SRC" ]; then
+            echo "ERROR: fjs package not found in pub cache"
+            exit 1
+          fi
+          # Resolve any symlinks — Cargokit rejects symlinked paths.
+          FJS_SRC=$(cd "$FJS_SRC" && pwd -P)
+          FJS_VERSION=$(basename "$FJS_SRC")
+          echo "fjs_src=$FJS_SRC" >> "$GITHUB_OUTPUT"
+          echo "fjs_version=$FJS_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Found fjs $FJS_VERSION at: $FJS_SRC"
+
+      - name: Cache fjs xcframework
+        id: fjs_cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/fjs-bin
+          key: fjs-xcframework-${{ steps.fjs_locate.outputs.fjs_version }}-release-v3
+
+      - name: Install fjs binary from cache
+        if: steps.fjs_cache.outputs.cache-hit == 'true'
+        run: |
+          FJS_SRC="${{ steps.fjs_locate.outputs.fjs_src }}"
+          mkdir -p "$FJS_SRC/darwin/fjs/Binaries"
+          cp "$GITHUB_WORKSPACE/fjs-bin/fjs.xcframework.zip" "$FJS_SRC/darwin/fjs/Binaries/"
+          if [ -f "$GITHUB_WORKSPACE/fjs-bin/fjs.xcframework.zip.checksum" ]; then
+            cp "$GITHUB_WORKSPACE/fjs-bin/fjs.xcframework.zip.checksum" "$FJS_SRC/darwin/fjs/Binaries/"
+          fi
+          echo "fjs binary installed from cache"
+
+      - name: Build fjs binary (Rust xcframework)
+        if: steps.fjs_cache.outputs.cache-hit != 'true'
+        run: |
+          FJS_SRC="${{ steps.fjs_locate.outputs.fjs_src }}"
+          # Copy out of pub cache to a NON-symlinked path — Dart refuses pub get
+          # inside the cache, and Cargokit rejects paths containing symlinks.
+          FJS_TEMP="$HOME/fjs-build"
+          rm -rf "$FJS_TEMP"
+          cp -R "$FJS_SRC" "$FJS_TEMP"
+          mkdir -p "$FJS_SRC/darwin/fjs/Binaries"
+          sh "$FJS_TEMP/tool/build_fjs_xcframework.sh" \
+            --configuration Release \
+            --zip-output "$FJS_SRC/darwin/fjs/Binaries/fjs.xcframework.zip"
+          mkdir -p "$GITHUB_WORKSPACE/fjs-bin"
+          cp "$FJS_SRC/darwin/fjs/Binaries/fjs.xcframework.zip" "$GITHUB_WORKSPACE/fjs-bin/"
+          if [ -f "$FJS_SRC/darwin/fjs/Binaries/fjs.xcframework.zip.checksum" ]; then
+            cp "$FJS_SRC/darwin/fjs/Binaries/fjs.xcframework.zip.checksum" "$GITHUB_WORKSPACE/fjs-bin/"
+          fi
+          echo "fjs binary built and cached successfully"
+
+      - name: Verify fjs binary
+        run: |
+          ZIP="${{ steps.fjs_locate.outputs.fjs_src }}/darwin/fjs/Binaries/fjs.xcframework.zip"
+          if [ -f "$ZIP" ]; then
+            echo "fjs.xcframework.zip exists ($(du -h "$ZIP" | cut -f1))"
+          else
+            echo "ERROR: fjs.xcframework.zip not found at $ZIP"
+            exit 1
+          fi
+
+      - name: Analyze
+        run: flutter analyze --no-pub
+        continue-on-error: true
+
+      - name: Build iOS app (no codesign — for TrollStore / Sideload)
+        run: flutter build ios --${{ github.event.inputs.build_mode || 'release' }} --no-codesign --no-tree-shake-icons
+
+      - name: Package IPA
+        id: ipa
+        run: |
+          APP_PATH=$(find build/ios/iphoneos -maxdepth 1 -name "*.app" -type d | head -1)
+          if [ -z "$APP_PATH" ]; then
+            echo "ERROR: No .app found in build/ios/iphoneos"
+            ls -la build/ios/iphoneos/ || true
+            exit 1
+          fi
+          echo "Found app: $APP_PATH"
+          mkdir -p Payload
+          cp -r "$APP_PATH" Payload/
+          mkdir -p build/ios/ipa
+          zip -rq build/ios/ipa/legado.ipa Payload
+          rm -rf Payload
+          IPA_PATH="build/ios/ipa/legado.ipa"
+          echo "Created $IPA_PATH ($(du -h "$IPA_PATH" | cut -f1))"
+          echo "ipa_path=$IPA_PATH" >> "$GITHUB_OUTPUT"
+          echo "ipa_name=legado.ipa" >> "$GITHUB_OUTPUT"
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: legado-ios-${{ github.event.inputs.build_mode || 'release' }}
+          path: ${{ steps.ipa.outputs.ipa_path }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload to Release (on tag)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.ipa.outputs.ipa_path }}
+          name: Legado ${{ github.ref_name }}
+          body: |
+            ## Legado ${{ github.ref_name }}
+
+            ### 安装方式
+
+            1. **TrollStore（推荐）**：将 `.ipa` 拖入 TrollStore 安装，无需签名，永久有效。
+            2. **自签安装**：使用 AltStore / Sideloadly / SideStore 用个人 Apple ID 签名安装，有效期 7 天，需每周刷新。
+
+            > 该构建未签名（`--no-codesign`），适合巨魔 / 自签场景。
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
