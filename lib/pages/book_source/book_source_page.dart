@@ -1,4 +1,6 @@
+import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../book_source/models/book_source.dart';
 import '../../book_source/services/book_source_service.dart';
@@ -221,8 +223,49 @@ class _BookSourcePageState extends State<BookSourcePage> {
   }
 
   Future<void> _safeClipboard(String text) async {
-    // 跨平台版暂不接入系统剪贴板，此处仅作占位提示。
-    await Future<void>.delayed(Duration.zero);
+    await Clipboard.setData(ClipboardData(text: text));
+  }
+
+  /// 从本地书源文件(.json / .txt)读取并导入。
+  Future<void> _importFromFile() async {
+    const typeGroup = XTypeGroup(
+      label: 'bookSource',
+      extensions: ['json', 'txt'],
+      uniformTypeIdentifiers: ['public.json', 'public.plain-text'],
+    );
+    final file = await openFile(acceptedTypeGroups: const [typeGroup]);
+    if (file == null) return;
+    final String content;
+    try {
+      content = await file.readAsString();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('读取文件失败：$e')));
+      return;
+    }
+    final text = content.trim();
+    if (text.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('文件内容为空')));
+      return;
+    }
+    // 口令书源：解密后再导入。
+    String usable = text;
+    if (SourceSharer.isEncrypted(text)) {
+      final dec = await _promptDecryptPassword(text);
+      if (dec == null || !mounted) return;
+      usable = dec;
+    }
+    final parsed = SourceImportParser.parse(usable);
+    if (parsed.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('文件内容未解析到书源')));
+      return;
+    }
+    await _runCompareImport(parsed);
   }
 
   @override
@@ -253,6 +296,8 @@ class _BookSourcePageState extends State<BookSourcePage> {
             PopupMenuButton<String>(
               onSelected: (v) {
                 switch (v) {
+                  case 'import_file':
+                    _importFromFile();
                   case 'import_url':
                     _importFromUrl();
                   case 'add':
@@ -273,6 +318,7 @@ class _BookSourcePageState extends State<BookSourcePage> {
               },
               itemBuilder: (_) => const [
                 PopupMenuItem(value: 'add', child: Text('新增书源')),
+                PopupMenuItem(value: 'import_file', child: Text('从本地文件导入书源')),
                 PopupMenuItem(value: 'import_url', child: Text('从链接导入书源')),
                 PopupMenuItem(value: 'qr', child: Text('书源二维码')),
                 PopupMenuItem(value: 'debug', child: Text('规则调试器')),
