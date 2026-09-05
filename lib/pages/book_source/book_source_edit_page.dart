@@ -70,11 +70,47 @@ class _BookSourceEditPageState extends State<BookSourceEditPage> {
     }
   }
 
+  /// 删除书源：二次确认后从服务移除并落盘。
+  void _delete() {
+    final src = widget.existing;
+    if (src == null) return;
+    showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('删除书源'),
+        content: Text('确定删除「${src.bookSourceName}」吗？'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    ).then((ok) {
+      if (ok != true || !mounted) return;
+      BookSourceService.instance.removeSource(src.bookSourceUrl);
+      BookSourceService.instance.save();
+      Navigator.pop(context, true);
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: Text(widget.existing == null ? '添加书源' : '编辑书源'),
+        actions: [
+          if (widget.existing != null)
+            IconButton(
+              icon: const Icon(Icons.delete_outline),
+              tooltip: '删除书源',
+              onPressed: _delete,
+            ),
+        ],
       ),
       body: ListView(
         padding: const EdgeInsets.all(16),

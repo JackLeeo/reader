@@ -87,6 +87,10 @@ class _ReaderPageState extends State<ReaderPage> {
   final GlobalKey<PagedTextViewState> _pagedKey = GlobalKey();
   int _pageIndex = 0;
 
+  // ---- 底部进度条 ----
+  double _tocProgress = 0.0; // 章节级当前进度（0..1）
+  double? _tocDrag;
+
   // ---- 朗读(TTS) ----
   TtsSpeaker? _speaker;
   bool _ttsPlaying = false;
@@ -583,6 +587,9 @@ class _ReaderPageState extends State<ReaderPage> {
     if (_scrollCtrl.hasClients) {
       _scrollCtrl.jumpTo(0);
     }
+    // 同步底部进度条当前章节进度。
+    _tocProgress =
+        _chapters.length <= 1 ? 0.0 : (_index / (_chapters.length - 1));
     // 连续朗读：切章完成后读新章正文。
     if (_ttsContinueFlag && _ttsPlaying && _content != null && !_loading) {
       _ttsContinueFlag = false;
@@ -591,6 +598,17 @@ class _ReaderPageState extends State<ReaderPage> {
         _speaker?.speak(body);
       }
     }
+  }
+
+  /// 底部进度条拖动后定位到对应章节（跳过卷标记）。
+  void _jumpToProgress(double v) {
+    if (_chapters.isEmpty) return;
+    var idx = (v * _chapters.length).floor().clamp(0, _chapters.length - 1);
+    while (idx >= 0 && idx < _chapters.length && _chapters[idx].isVolume) {
+      idx++;
+    }
+    if (idx < 0 || idx >= _chapters.length) return;
+    _loadChapter(idx);
   }
 
   // ---- 朗读(TTS) ----
@@ -2010,6 +2028,30 @@ class _ReaderPageState extends State<ReaderPage> {
                     _toast(v ? '已开启只显示大图' : '已关闭只显示大图');
                   },
                 ),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('深色反色'),
+                  subtitle: const Text('夜间阅读反转明暗'),
+                  value: _pref.comicInvert,
+                  onChanged: (v) {
+                    _pref.setComicInvert(v);
+                    setSheet(() {});
+                    setState(() {});
+                    _toast(v ? '已开启反色' : '已关闭反色');
+                  },
+                ),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('锁定视图'),
+                  subtitle: const Text('禁用缩放与平移'),
+                  value: _pref.comicLock,
+                  onChanged: (v) {
+                    _pref.setComicLock(v);
+                    setSheet(() {});
+                    setState(() {});
+                    _toast(v ? '已锁定视图' : '已解锁视图');
+                  },
+                ),
               ],
             ),
           ),
@@ -2266,6 +2308,36 @@ class _ReaderPageState extends State<ReaderPage> {
                   ),
                 ),
               ),
+            // 底部进度条：唤出菜单时显示，可拖动快速定位章节。
+            if (_showChrome)
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 0,
+                child: Container(
+                  color: theme.bg.withValues(alpha: 0.92),
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  child: Row(
+                    children: [
+                      Text('第${_index + 1}章',
+                          style: TextStyle(fontSize: 11, color: theme.fg)),
+                      Expanded(
+                        child: Slider(
+                          value: _tocDrag ?? _tocProgress,
+                          onChanged: (v) => setState(() => _tocDrag = v),
+                          onChangeStart: (_) => setState(() {}),
+                          onChangeEnd: (v) {
+                            setState(() => _tocDrag = null);
+                            _jumpToProgress(v);
+                          },
+                        ),
+                      ),
+                      Text('${_chapters.length}章',
+                          style: TextStyle(fontSize: 11, color: theme.fg)),
+                    ],
+                  ),
+                ),
+              ),
           ],
         ),
       ),
@@ -2307,6 +2379,8 @@ class _ReaderPageState extends State<ReaderPage> {
           doublePage: _pref.comicDoublePage,
           scrollMode: _pref.comicScroll,
           onlyLarge: _pref.comicOnlyLarge,
+          invert: _pref.comicInvert,
+          locked: _pref.comicLock,
         );
       }
       if (widget.book.isAudioSource) {

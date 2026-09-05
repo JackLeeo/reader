@@ -125,6 +125,15 @@ class BookSourceService {
     }
   }
 
+  /// 启用 / 禁用单个书源的「发现」能力。
+  void setExploreEnabled(String url, bool enabled) {
+    final idx = _sources.indexWhere((s) => s.bookSourceUrl == url);
+    if (idx >= 0) {
+      _sources[idx] =
+          _sources[idx].copyWith(enabledExplore: enabled);
+    }
+  }
+
   /// 全部启用 / 禁用。
   void setAllEnabled(bool enabled) {
     for (var i = 0; i < _sources.length; i++) {

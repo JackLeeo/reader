@@ -17,6 +17,7 @@ ColorFilter? comicColorFilter({
   required double contrast,
   required double saturation,
   required ComicFilter filter,
+  bool invert = false,
 }) {
   // 饱和度矩阵（标准线性插值到灰度）。
   const lumR = 0.213, lumG = 0.715, lumB = 0.072;
@@ -53,20 +54,32 @@ ColorFilter? comicColorFilter({
   switch (filter) {
     case ComicFilter.grayscale:
       final g = _mul(grayscaleMatrix(), m2);
-      return ColorFilter.matrix(g.take(20).toList());
+      return ColorFilter.matrix(_maybeInvert(g, invert).take(20).toList());
     case ComicFilter.warmth:
       final f = _tint(1.06, 1.0, 0.90);
-      return ColorFilter.matrix(_mul(f, m2).take(20).toList());
+      return ColorFilter.matrix(_maybeInvert(_mul(f, m2), invert).take(20).toList());
     case ComicFilter.cool:
       final f = _tint(0.92, 1.0, 1.08);
-      return ColorFilter.matrix(_mul(f, m2).take(20).toList());
+      return ColorFilter.matrix(_maybeInvert(_mul(f, m2), invert).take(20).toList());
     case ComicFilter.sepia:
       final f = _sepia();
-      return ColorFilter.matrix(_mul(f, m2).take(20).toList());
+      return ColorFilter.matrix(_maybeInvert(_mul(f, m2), invert).take(20).toList());
     case ComicFilter.none:
-      return ColorFilter.matrix(m2.take(20).toList());
+      return ColorFilter.matrix(_maybeInvert(m2, invert).take(20).toList());
   }
 }
+
+/// 若开启深色反色，在矩阵后叠乘反色矩阵（R'=1-R 等）。
+List<double> _maybeInvert(List<double> m, bool invert) =>
+    invert ? _mul(invertMatrix(), m) : m;
+
+/// 反色矩阵。
+List<double> invertMatrix() => [
+      -1, 0, 0, 0, 255,
+      0, -1, 0, 0, 255,
+      0, 0, -1, 0, 255,
+      0, 0, 0, 1, 0,
+    ];
 
 /// 灰度（饱和度 0）矩阵。
 List<double> grayscaleMatrix() {

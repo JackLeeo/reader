@@ -58,6 +58,8 @@ class ReadingPref {
   static const String _kAloudOnPageTurn = 'read.aloudOnPageTurn';
   static const String _kComicScroll = 'read.comicScroll';
   static const String _kComicOnlyLarge = 'read.comicOnlyLarge';
+  static const String _kComicInvert = 'read.comicInvert';
+  static const String _kComicLock = 'read.comicLock';
 
   /// 阅读字体（FontService 注册后的 family 名，空 = 系统默认）。
   String _fontFamily = '';
@@ -146,6 +148,12 @@ class ReadingPref {
   bool _comicScroll = false;
   bool _comicOnlyLarge = false;
 
+  /// 漫画深色反色（夜间阅读漫画时反转明暗）。
+  bool _comicInvert = false;
+
+  /// 漫画视图锁定（禁用缩放/平移）。
+  bool _comicLock = false;
+
   bool _loaded = false;
 
   int get fontSize => _fontSize;
@@ -179,6 +187,8 @@ class ReadingPref {
   int get aloudOnPageTurn => _aloudOnPageTurn;
   bool get comicScroll => _comicScroll;
   bool get comicOnlyLarge => _comicOnlyLarge;
+  bool get comicInvert => _comicInvert;
+  bool get comicLock => _comicLock;
 
   FontWeight get fontWeightValue {
     switch (_fontWeight) {
@@ -225,6 +235,8 @@ class ReadingPref {
     _aloudOnPageTurn = p.getInt(_kAloudOnPageTurn) ?? 0;
     _comicScroll = p.getBool(_kComicScroll) ?? false;
     _comicOnlyLarge = p.getBool(_kComicOnlyLarge) ?? false;
+    _comicInvert = p.getBool(_kComicInvert) ?? false;
+    _comicLock = p.getBool(_kComicLock) ?? false;
     _indexOfFont = kFontSizes.indexOf(_fontSize);
     if (_indexOfFont < 0) _indexOfFont = 3;
     _loaded = true;
@@ -408,5 +420,17 @@ class ReadingPref {
     _comicOnlyLarge = v;
     final p = await SharedPreferences.getInstance();
     await p.setBool(_kComicOnlyLarge, v);
+  }
+
+  Future<void> setComicInvert(bool v) async {
+    _comicInvert = v;
+    final p = await SharedPreferences.getInstance();
+    await p.setBool(_kComicInvert, v);
+  }
+
+  Future<void> setComicLock(bool v) async {
+    _comicLock = v;
+    final p = await SharedPreferences.getInstance();
+    await p.setBool(_kComicLock, v);
   }
 }

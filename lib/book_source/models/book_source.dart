@@ -140,9 +140,11 @@ class BookSource {
 
   BookSource copyWith({
     bool? enabled,
+    bool? enabledExplore,
     List<String>? groups,
   }) {
     final newEnabled = enabled ?? this.enabled;
+    final newExplore = enabledExplore ?? this.enabledExplore;
     final newGroups = groups ?? this.groups;
     return BookSource(
       bookSourceUrl: bookSourceUrl,
@@ -152,7 +154,7 @@ class BookSource {
       bookUrlPattern: bookUrlPattern,
       customOrder: customOrder,
       enabled: newEnabled,
-      enabledExplore: enabledExplore,
+      enabledExplore: newExplore,
       jsLib: jsLib,
       enabledCookieJar: enabledCookieJar,
       concurrentRate: concurrentRate,

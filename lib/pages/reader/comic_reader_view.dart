@@ -31,6 +31,8 @@ class ComicReaderView extends StatefulWidget {
     this.doublePage = false,
     this.scrollMode = false,
     this.onlyLarge = false,
+    this.invert = false,
+    this.locked = false,
   });
 
   final List<String> imageUrls;
@@ -67,6 +69,12 @@ class ComicReaderView extends StatefulWidget {
 
   /// 只显示大图：过滤掉过小（占位/长条缩略）的图片。
   final bool onlyLarge;
+
+  /// 深色反色（夜间阅读反转明暗）。
+  final bool invert;
+
+  /// 视图锁定：禁用缩放/平移。
+  final bool locked;
 
   /// 判定为“小图”的像素阈值（宽或高低于它则隐藏）。
   static const double kOnlyLargeMin = 96;
@@ -122,6 +130,7 @@ class _ComicReaderViewState extends State<ComicReaderView> {
       contrast: widget.contrast,
       saturation: widget.saturation,
       filter: widget.filter,
+      invert: widget.invert,
     );
     if (filter != null) {
       content = ColorFiltered(colorFilter: filter, child: content);
@@ -183,7 +192,7 @@ class _ComicReaderViewState extends State<ComicReaderView> {
                 widget.scrollMode
                     ? '${widget.chapterTitle}  ${widget.imageUrls.length} 图'
                     : widget.doublePage
-                        ? '${widget.chapterTitle}  ${(_page * 2 + 1) - widget.imageUrls.length}…${(_page + 1) * 2} / ${widget.imageUrls.length}'
+                        ? _doublePageLabel()
                         : '${widget.chapterTitle}  ${_page + 1}/${widget.imageUrls.length}',
                 style: TextStyle(
                   fontSize: 12,
@@ -244,6 +253,8 @@ class _ComicReaderViewState extends State<ComicReaderView> {
         maxScale: 5,
         minScale: 0.8,
         clipBehavior: Clip.hardEdge,
+        panEnabled: !widget.locked,
+        scaleEnabled: !widget.locked,
         child: Center(
           child: _renderImage(
             bg,
@@ -322,6 +333,19 @@ class _ComicReaderViewState extends State<ComicReaderView> {
         ],
       ),
     );
+  }
+
+  /// 双页模式页码：屏内显示左侧图-右侧图（末屏仅左图时只显示单页），页码从 1 计。
+  String _doublePageLabel() {
+    final len = widget.imageUrls.length;
+    final left = _page * 2; // 左图 index（0 起）
+    final right = left + 1;
+    final hasRight = right < len;
+    final leftPage = left + 1;
+    final rightPage = right + 1;
+    return widget.doublePage
+        ? '${widget.chapterTitle}  $leftPage${hasRight ? '-$rightPage' : ''} / $len'
+        : '${widget.chapterTitle}  $leftPage/$len';
   }
 
   void _nextChapter() {
