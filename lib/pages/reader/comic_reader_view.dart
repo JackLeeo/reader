@@ -79,6 +79,13 @@ class _ComicReaderViewState extends State<ComicReaderView> {
   late final PageController _controller = PageController();
   late int _page = 0;
 
+  // ---- 点击识别（用 Listener 绕过 InteractiveViewer 的手势竞技场）----
+  // InteractiveViewer 的 ScaleGestureRecognizer 会在竞技场里吞掉外层 GestureDetector.onTap，
+  // 导致点击唤不出设置栏。Pointer 事件不参与竞技场，必定收到。
+  Offset? _downPos;
+  Duration _downTime = Duration.zero;
+  bool _moved = false;
+
   @override
   void dispose() {
     _controller.dispose();
@@ -124,7 +131,6 @@ class _ComicReaderViewState extends State<ComicReaderView> {
         Positioned.fill(
           child: GestureDetector(
             behavior: HitTestBehavior.opaque,
-            onTap: widget.onToggleChrome,
             onVerticalDragEnd: widget.scrollMode
                 ? null
                 : (d) {
@@ -135,7 +141,30 @@ class _ComicReaderViewState extends State<ComicReaderView> {
                       _prevChapter();
                     }
                   },
-            child: content,
+            // Listener 负责点击唤 chrome：InteractiveViewer 会吞掉外层 onTap，
+            // 这里用 Pointer 事件手动判断「点按」，避免点按无响应。
+            child: Listener(
+              behavior: HitTestBehavior.opaque,
+              onPointerDown: (e) {
+                _downPos = e.position;
+                _downTime = e.timeStamp;
+                _moved = false;
+              },
+              onPointerMove: (e) {
+                final d = _downPos;
+                if (d != null && (e.position - d).distance > 12) _moved = true;
+              },
+              onPointerUp: (e) {
+                final d = _downPos;
+                if (d == null) return;
+                _downPos = null;
+                // 位移小且少于长按阈值 → 点按唤 chrome；否则是缩放/平移/翻页/滚动画。
+                final isTap = !_moved &&
+                    (e.timeStamp - _downTime) < const Duration(milliseconds: 500);
+                if (isTap) widget.onToggleChrome();
+              },
+              child: content,
+            ),
           ),
         ),
         // 页码指示

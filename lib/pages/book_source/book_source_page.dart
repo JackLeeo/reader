@@ -145,10 +145,18 @@ class _BookSourcePageState extends State<BookSourcePage> {
   Future<void> _runCompareImport(List<BookSource> incoming) async {
     final n = await SourceImportPreview.show(context, incoming);
     if (n == null) return;
+    // 导入成功：切到新书源所在分组，保证“所见即所得”（无分组回“未分组”）。
+    var target = '未分组';
+    for (final s in incoming) {
+      if (s.groups.isNotEmpty) {
+        target = s.groups.first;
+        break;
+      }
+    }
     if (!mounted) return;
+    setState(() => _group = target);
     ScaffoldMessenger.of(context)
         .showSnackBar(SnackBar(content: Text('已导入/更新 $n 个书源')));
-    _reload();
   }
 
   Future<void> _exportAll() async {
@@ -285,6 +293,8 @@ class _BookSourcePageState extends State<BookSourcePage> {
           bottom: hasTabs
               ? TabBar(
                   isScrollable: true,
+                  onTap: (i) =>
+                      setState(() => _group = i >= 0 && i < groups.length ? groups[i] : '未分组'),
                   tabs: [for (final g in groups) Tab(text: g)],
                 )
               : null,

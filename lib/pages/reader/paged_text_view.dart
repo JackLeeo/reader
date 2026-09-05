@@ -69,6 +69,11 @@ class PagedTextViewState extends State<PagedTextView> {
   int _page = 0;
   String _cacheKey = '';
 
+  // ---- 点击识别（用 Listener 绕过 SelectableText 的手势竞技场）----
+  Offset? _downPos;
+  Duration _downTime = Duration.zero;
+  bool _moved = false;
+
   bool get isVertical => widget.pageMode == 3;
 
   @override
@@ -172,10 +177,28 @@ class PagedTextViewState extends State<PagedTextView> {
     }
     return LayoutBuilder(builder: (ctx, box) {
       final width = box.maxWidth;
-      return GestureDetector(
+      // 用 Listener：SelectableText 内部的手势识别器会吞掉外层 GestureDetector 的
+      // onTapUp/onTap，导致点击唤不出菜单。Pointer 事件不参与手势竞技场，必定收到。
+      return Listener(
         behavior: HitTestBehavior.opaque,
-        onTapUp: (d) => _handleTapUp(d, width),
-        onTap: widget.onZoneTap == null ? widget.onTap : null,
+        onPointerDown: (e) {
+          _downPos = e.position;
+          _downTime = e.timeStamp;
+          _moved = false;
+        },
+        onPointerMove: (e) {
+          final d = _downPos;
+          if (d != null && (e.position - d).distance > 12) _moved = true;
+        },
+        onPointerUp: (e) {
+          final d = _downPos;
+          if (d == null) return;
+          _downPos = null;
+          // 位移小且按下时间短于长按阈值 → 视为点按，否则是滑动翻页 / 划词 / 长按选中。
+          final isTap = !_moved && (e.timeStamp - _downTime) < const Duration(milliseconds: 500);
+          if (!isTap) return;
+          _handleTapUp(e.position.dx, width);
+        },
         child: Padding(
           padding: EdgeInsets.all(widget.padding),
           child: Align(
@@ -194,16 +217,18 @@ class PagedTextViewState extends State<PagedTextView> {
 
   /// 点击命中：根据横坐标把页面分成左/中/右三区。
   /// 启用「点击区域动作」时按区响应，否则整屏切换菜单。
-  void _handleTapUp(TapUpDetails d, double width) {
+  void _handleTapUp(double dx, double width) {
     if (width <= 0) {
       widget.onTap();
       return;
     }
-    final zone = d.localPosition.dx < width / 3
+    if (widget.onZoneTap == null) {
+      widget.onTap();
+      return;
+    }
+    final zone = dx < width / 3
         ? PageTapZone.left
-        : (d.localPosition.dx > width * 2 / 3
-            ? PageTapZone.right
-            : PageTapZone.middle);
+        : (dx > width * 2 / 3 ? PageTapZone.right : PageTapZone.middle);
     widget.onZoneTap?.call(zone);
   }
 
