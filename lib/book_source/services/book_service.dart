@@ -1,8 +1,11 @@
 import 'dart:convert';
 
+import 'package:html/dom.dart' as dom;
+
 import '../analyze/analyze_rule.dart';
 import '../models/book_source.dart';
 import '../models/books.dart';
+import '../utils/url_util.dart';
 import 'book_source_service.dart';
 import 'http_service.dart';
 
@@ -57,6 +60,8 @@ class BookService {
   }
 
   /// 拉取目录。失败返回空列表。
+  /// 支持简配书源（未配置 chapterName/chapterUrl 时回退元素文本/href），
+  /// 以及官方多页目录（`nextTocUrl` 翻页追加），最大翻 50 页防死循环。
   Future<List<BookChapter>> getToc(
     Book book, {
     BookSource? source,
@@ -85,26 +90,79 @@ class BookService {
     analyze.setBaseUrl(baseUrl);
     analyze.setContent(content);
 
-    final elements = await analyze.getElementsAsync(rule?.chapterList ?? '');
-    if (elements.isEmpty) return const [];
-
     final chapters = <BookChapter>[];
-    for (final el in elements) {
-      final title = await analyze.getStringAsync(rule?.chapterName ?? '', mContent: el);
+    // 第一页。
+    var pageElements = await analyze.getElementsAsync(rule?.chapterList ?? '');
+    chapters.addAll(await _parseTocPage(analyze, rule, pageElements, baseUrl));
+
+    // 官方多页目录：按 nextTocUrl 逐页追加，页含章节则继续；上限 50 页防异常。
+    var nextRule = (rule?.nextTocUrl ?? '').trim();
+    var nextUrl =
+        nextRule.isEmpty ? '' : await analyze.getStringAsync(nextRule, isUrl: true);
+    var page = 0;
+    while (nextUrl.isNotEmpty && page < 50) {
+      page++;
+      final resp = await HttpService.instance.get(nextUrl, source: src);
+      if (!resp.ok) break;
+      baseUrl = resp.finalUrl?.toString() ?? nextUrl;
+      analyze.setBaseUrl(baseUrl);
+      analyze.setContent(_smartContent(resp));
+      pageElements = await analyze.getElementsAsync(rule?.chapterList ?? '');
+      if (pageElements.isEmpty) break;
+      chapters.addAll(await _parseTocPage(analyze, rule, pageElements, baseUrl));
+      nextRule = (rule?.nextTocUrl ?? '').trim();
+      nextUrl =
+          nextRule.isEmpty ? '' : await analyze.getStringAsync(nextRule, isUrl: true);
+    }
+    return chapters;
+  }
+
+  /// 解析目录的一页元素为章节列表。title/url 规则为空时回退元素文本/链接，避免漏章。
+  Future<List<BookChapter>> _parseTocPage(
+    AnalyzeRule analyze,
+    TocRule? rule,
+    List<Object> elements,
+    String baseUrl,
+  ) async {
+    final chapters = <BookChapter>[];
+    final titleRule = (rule?.chapterName ?? '').trim();
+    final urlRule = (rule?.chapterUrl ?? '').trim();
+    for (final e in elements) {
+      final el = e is dom.Element ? e : null;
+      final title = titleRule.isNotEmpty
+          ? await analyze.getStringAsync(titleRule, mContent: e)
+          : (el?.text.trim() ?? '');
       if (title.isEmpty) continue;
-      final url =
-          await analyze.getStringAsync(rule?.chapterUrl ?? '', mContent: el, isUrl: true);
+      final url = urlRule.isNotEmpty
+          ? await analyze.getStringAsync(urlRule, mContent: e, isUrl: true)
+          : _chapterHref(el, baseUrl);
       if (url.isEmpty) continue;
-      // 消费官方 TocRule 的辅助字段：卷标记/会员/付费（元素级布尔规则）。
       chapters.add(BookChapter(
         title: title,
         url: url,
-        isVolume: await _evalTruthyAsync(analyze, rule?.isVolume ?? '', el),
-        isVip: await _evalTruthyAsync(analyze, rule?.isVip ?? '', el),
-        isPay: await _evalTruthyAsync(analyze, rule?.isPay ?? '', el),
+        isVolume: await _evalTruthyAsync(analyze, rule?.isVolume ?? '', e),
+        isVip: await _evalTruthyAsync(analyze, rule?.isVip ?? '', e),
+        isPay: await _evalTruthyAsync(analyze, rule?.isPay ?? '', e),
       ));
     }
     return chapters;
+  }
+
+  /// 未配置 chapterUrl 时，从元素自身或其子 `<a>` 的 href 取章节地址（转绝对）。
+  String _chapterHref(dom.Element? el, String baseUrl) {
+    if (el == null) return '';
+    for (final key in const ['href', 'data-url', 'data-src']) {
+      final v = el.attributes[key];
+      if (v != null && v.trim().isNotEmpty) {
+        return UrlUtil.getAbsoluteURL(baseUrl, v.trim());
+      }
+    }
+    final a = el.querySelector('a');
+    final av = a?.attributes['href'];
+    if (av != null && av.trim().isNotEmpty) {
+      return UrlUtil.getAbsoluteURL(baseUrl, av.trim());
+    }
+    return '';
   }
 
   /// 元素级布尔规则求值：`true/1/yes` 视为真，空规则视为假（对齐官方 TruthyUtil）。
