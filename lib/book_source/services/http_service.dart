@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:http/http.dart' as http;
 import 'package:http/io_client.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:gbk_codec/gbk_codec.dart';
 
@@ -44,6 +45,22 @@ class HttpService {
       'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) '
       'Chrome/120.0.0.0 Mobile Safari/537.36';
 
+  /// 自定义全局 UA（空 = 用默认）。
+  String _customUserAgent = '';
+
+  String get userAgent => _customUserAgent.trim().isEmpty
+      ? defaultUserAgent
+      : _customUserAgent.trim();
+
+  /// 设置自定义全局 UA（空串恢复默认）。
+  void setUserAgent(String v) => _customUserAgent = v;
+
+  /// 启动时从偏好恢复自定义 UA / 常用偏好。
+  Future<void> load() async {
+    final p = await SharedPreferences.getInstance();
+    _customUserAgent = p.getString('customUA') ?? '';
+  }
+
   /// 内置 Client：通过 `findProxy` 接入全局代理（每次请求实时读取，改动即时生效）。
   final http.Client _client = _buildClient();
 
@@ -59,7 +76,7 @@ class HttpService {
   /// 默认请求头（合并书源自定义头）。
   Map<String, String> _baseHeaders() {
     final headers = <String, String>{
-      'User-Agent': defaultUserAgent,
+      'User-Agent': userAgent,
       'Accept': '*/*',
       'Connection': 'keep-alive',
     };

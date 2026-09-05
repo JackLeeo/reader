@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 
+import '../../book_source/services/http_service.dart';
 import '../../book_source/services/read_stat_service.dart';
 import '../../core/reading_pref.dart';
 import '../../core/theme_mode_store.dart';
@@ -276,6 +279,20 @@ class MePage extends StatelessWidget {
             ),
           ),
           ListTile(
+            leading: const Icon(Icons.home_outlined),
+            title: const Text('默认首页'),
+            subtitle: const Text('启动时优先显示的底部页签'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => _pickDefaultHome(context),
+          ),
+          ListTile(
+            leading: const Icon(Icons.public_outlined),
+            title: const Text('自定义 User-Agent'),
+            subtitle: const Text('覆盖全局请求 UA（空 = 默认）'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => _editUserAgent(context),
+          ),
+          ListTile(
             leading: const Icon(Icons.info_outline),
             title: const Text('关于 Legado'),
             trailing: const Icon(Icons.chevron_right),
@@ -436,6 +453,70 @@ class MePage extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  Future<void> _pickDefaultHome(BuildContext context) async {
+    const names = ['书库', '发现', '我的', 'RSS'];
+    final p = await SharedPreferences.getInstance();
+    final cur = p.getInt('defaultHome') ?? 0;
+    if (!context.mounted) return;
+    showModalBottomSheet(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (var i = 0; i < names.length; i++)
+              ListTile(
+                leading: Icon(
+                  cur == i ? Icons.radio_button_checked : Icons.radio_button_off,
+                  color: Theme.of(ctx).colorScheme.primary,
+                ),
+                title: Text(names[i]),
+                onTap: () {
+                  p.setInt('defaultHome', i);
+                  Navigator.pop(ctx);
+                },
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _editUserAgent(BuildContext context) async {
+    final p = await SharedPreferences.getInstance();
+    final controller =
+        TextEditingController(text: p.getString('customUA') ?? '');
+    if (!context.mounted) return;
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('自定义 User-Agent'),
+        content: TextField(
+          controller: controller,
+          maxLines: 3,
+          decoration: const InputDecoration(hintText: '留空则使用默认 UA'),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
+    if (saved == true) {
+      final v = controller.text.trim();
+      await p.setString('customUA', v);
+      HttpService.instance.setUserAgent(v);
+      if (context.mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(v.isEmpty ? '已恢复默认 UA' : '已应用自定义 UA')));
+      }
+    }
+    controller.dispose();
   }
 
   void _showAbout(BuildContext context) {
@@ -610,6 +691,16 @@ class _ReadingSettingsPanelState extends State<ReadingSettingsPanel> {
                   ),
                 ],
               ),
+            ),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('阅读常亮'),
+              subtitle: const Text('阅读时屏幕保持常亮'),
+              value: _pref.keepScreenOn,
+              onChanged: (v) async {
+                setState(() => _pref.setKeepScreenOn(v));
+                v ? await WakelockPlus.enable() : await WakelockPlus.disable();
+              },
             ),
           ],
         ),

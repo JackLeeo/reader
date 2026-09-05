@@ -60,14 +60,17 @@ class ReadingPref {
   static const String _kComicOnlyLarge = 'read.comicOnlyLarge';
   static const String _kComicInvert = 'read.comicInvert';
   static const String _kComicLock = 'read.comicLock';
+  static const String _kKeepScreenOn = 'read.keepScreenOn';
 
   /// 阅读字体（FontService 注册后的 family 名，空 = 系统默认）。
   String _fontFamily = '';
 
   static const List<int> kFontSizes = [14, 16, 18, 20, 22, 24, 28];
 
-  /// 翻页模式：0 仿真翻页, 1 覆盖滚动, 2 滚动, 3 纵向翻页。
-  static const List<String> kPageModeNames = ['仿真', '覆盖', '滚动', '纵向'];
+  /// 翻页模式：0 仿真翻页, 1 覆盖滚动, 2 滚动, 3 纵向翻页, 4 无动画横向。
+  static const List<String> kPageModeNames = [
+    '仿真', '覆盖', '滚动', '纵向', '无动画',
+  ];
 
   /// 阅读背景主题（name, foreground, background）。
   static const List<({String name, Color fg, Color bg})> kThemes = [
@@ -154,6 +157,9 @@ class ReadingPref {
   /// 漫画视图锁定（禁用缩放/平移）。
   bool _comicLock = false;
 
+  /// 阅读常亮（阅读时保持屏幕常亮）。
+  bool _keepScreenOn = false;
+
   bool _loaded = false;
 
   int get fontSize => _fontSize;
@@ -189,6 +195,7 @@ class ReadingPref {
   bool get comicOnlyLarge => _comicOnlyLarge;
   bool get comicInvert => _comicInvert;
   bool get comicLock => _comicLock;
+  bool get keepScreenOn => _keepScreenOn;
 
   FontWeight get fontWeightValue {
     switch (_fontWeight) {
@@ -237,6 +244,7 @@ class ReadingPref {
     _comicOnlyLarge = p.getBool(_kComicOnlyLarge) ?? false;
     _comicInvert = p.getBool(_kComicInvert) ?? false;
     _comicLock = p.getBool(_kComicLock) ?? false;
+    _keepScreenOn = p.getBool(_kKeepScreenOn) ?? false;
     _indexOfFont = kFontSizes.indexOf(_fontSize);
     if (_indexOfFont < 0) _indexOfFont = 3;
     _loaded = true;
@@ -432,5 +440,11 @@ class ReadingPref {
     _comicLock = v;
     final p = await SharedPreferences.getInstance();
     await p.setBool(_kComicLock, v);
+  }
+
+  Future<void> setKeepScreenOn(bool v) async {
+    _keepScreenOn = v;
+    final p = await SharedPreferences.getInstance();
+    await p.setBool(_kKeepScreenOn, v);
   }
 }

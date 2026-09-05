@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../pages/bookshelf/bookshelf_page.dart';
 import '../pages/explore/explore_page.dart';
@@ -53,6 +54,21 @@ class MainScaffold extends StatefulWidget {
 
 class _MainScaffoldState extends State<MainScaffold> {
   int _index = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadDefaultHome();
+  }
+
+  /// 恢复「默认首页」设置（0 书库 / 1 发现 / 2 我的 / 3 RSS）。
+  Future<void> _loadDefaultHome() async {
+    final p = await SharedPreferences.getInstance();
+    final i = p.getInt('defaultHome') ?? 0;
+    if (mounted && i >= 0 && i < kMainDestinations.length) {
+      setState(() => _index = i);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {

@@ -23,6 +23,7 @@ import 'book_source/services/rule_subscription_service.dart';
 import 'book_source/services/proxy_service.dart';
 import 'book_source/services/shelf_service.dart';
 import 'book_source/services/tts_service.dart';
+import 'book_source/services/http_service.dart';
 import 'book_source/services/webdav_service.dart';
 import 'core/reading_pref.dart';
 import 'core/audio_playback_service.dart';
@@ -47,6 +48,7 @@ Future<void> main() async {
   await HighlightService.instance.init();
   await NoteService.instance.init();
   await AutoTaskService.instance.init();
+  await HttpService.instance.load();
   // 漫画离线 / 文本缓存 存储根目录：应用文档目录。
   try {
     final docs = await getApplicationDocumentsDirectory();

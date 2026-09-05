@@ -99,14 +99,16 @@ class PagedTextViewState extends State<PagedTextView> {
   int get pageCount => _pager?.pages.length ?? 0;
   int get currentPage => _page;
 
+  /// 程序翻页动画时长：无动画模式(4)即时切换，其余轻微过渡。
+  Duration get _turn => widget.pageMode == 4
+      ? Duration.zero
+      : const Duration(milliseconds: 400);
+
   /// 自动翻页：下一页，到底返回 false（由调用方决定是否翻章）。
   bool goNextPage() {
     if (_pager == null || _ctrl == null) return false;
     if (_page < _pager!.pages.length - 1) {
-      _ctrl!.nextPage(
-        duration: const Duration(milliseconds: 400),
-        curve: Curves.easeOut,
-      );
+      _ctrl!.nextPage(duration: _turn, curve: Curves.easeOut);
       return true;
     }
     return false;
@@ -116,10 +118,7 @@ class PagedTextViewState extends State<PagedTextView> {
   bool goPrevPage() {
     if (_pager == null || _ctrl == null) return false;
     if (_page > 0) {
-      _ctrl!.previousPage(
-        duration: const Duration(milliseconds: 400),
-        curve: Curves.easeOut,
-      );
+      _ctrl!.previousPage(duration: _turn, curve: Curves.easeOut);
       return true;
     }
     return false;

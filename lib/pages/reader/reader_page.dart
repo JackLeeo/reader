@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../../book_source/help/audio_engine.dart';
 import '../../book_source/help/content_processor.dart';
@@ -139,6 +140,8 @@ class _ReaderPageState extends State<ReaderPage> {
     HighlightService.instance.init();
     _loadChapter(_index);
     _dispatchSourceEvent('startRead');
+    // 阅读常亮：按设置锁屏前不熄屏。
+    unawaited(_applyKeepScreen());
     // 媒体键控制朗读（硬件播放/暂停/停止/上下章）。
     HardwareKeyboard.instance.addHandler(_handleMediaKey);
     // 前台阅读期间每 30 秒落盘一次（本地缓存 1 秒计数）。
@@ -174,7 +177,14 @@ class _ReaderPageState extends State<ReaderPage> {
     HardwareKeyboard.instance.removeHandler(_handleMediaKey);
     _scrollCtrl.dispose();
     _dispatchSourceEvent('endRead');
+    // 退出阅读页恢复系统熄屏策略。
+    unawaited(WakelockPlus.disable());
     super.dispose();
+  }
+
+  /// 依据阅读常亮设置启用/停用 wakelock。
+  Future<void> _applyKeepScreen() {
+    return _pref.keepScreenOn ? WakelockPlus.enable() : WakelockPlus.disable();
   }
 
   /// 媒体键处理：播放/暂停、停止、上下章。
@@ -1458,6 +1468,27 @@ class _ReaderPageState extends State<ReaderPage> {
                 '以系统TTS引擎时语速/音量直接生效；HTTP网络TTS引擎语速由其连接URL决定，仅音量生效。',
                 style: TextStyle(fontSize: 12),
               ),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: [
+                  TextButton.icon(
+                    onPressed: () {
+                      Navigator.pop(dctx);
+                      _skipChapter(delta: -1, readAloud: _ttsPlaying);
+                    },
+                    icon: const Icon(Icons.skip_previous, size: 18),
+                    label: const Text('上一章'),
+                  ),
+                  TextButton.icon(
+                    onPressed: () {
+                      Navigator.pop(dctx);
+                      _skipChapter(delta: 1, readAloud: _ttsPlaying);
+                    },
+                    icon: const Icon(Icons.skip_next, size: 18),
+                    label: const Text('下一章'),
+                  ),
+                ],
+              ),
             ],
             ),
           ),
@@ -1823,6 +1854,19 @@ class _ReaderPageState extends State<ReaderPage> {
                         },
                       ),
                     ),
+                  ),
+                  // 阅读常亮
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('阅读常亮'),
+                    subtitle: const Text('阅读时屏幕保持常亮'),
+                    value: _pref.keepScreenOn,
+                    onChanged: (v) async {
+                      _pref.setKeepScreenOn(v);
+                      unawaited(
+                          v ? WakelockPlus.enable() : WakelockPlus.disable());
+                      setSheet(() {});
+                    },
                   ),
                   // 朗读配置（语速/音量）
                   ListTile(
